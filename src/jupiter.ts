@@ -1,4 +1,4 @@
-import { Token, TokenWithPrice } from './types';
+import { Token, TokenWithPrice, COIN_METADATA } from './types';
 
 // Constants
 const JUP_API_BASE = 'https://api.jup.ag';
@@ -23,25 +23,40 @@ export async function fetchVerifiedTokens(): Promise<Token[]> {
     headers['x-api-key'] = apiKey;
   }
 
-  const res = await fetch(`${TOKENS_API_BASE}/tokens/v2/tag?query=verified`, { headers });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch verified tokens from Jupiter API: ${res.statusText} (${res.status})`);
+  try {
+    const res = await fetch(`${TOKENS_API_BASE}/tokens/v2/tag?query=verified`, { headers });
+    if (!res.ok) {
+      throw new Error(`HTTP status ${res.status}`);
+    }
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      // Map and sort them
+      const tokens: Token[] = data.map((t: any) => ({
+        address: t.id,
+        symbol: t.symbol,
+        name: t.name,
+        decimals: t.decimals,
+        logoURI: t.icon || undefined,
+        tags: t.tags || [],
+      }));
+      cachedTokens = tokens;
+      return tokens;
+    }
+  } catch (err) {
+    console.warn('Could not fetch verified tokens from Jupiter API. Falling back to local token metadata.', err);
   }
-  const data = await res.json();
-  if (Array.isArray(data)) {
-    // Map and sort them
-    const tokens: Token[] = data.map((t: any) => ({
-      address: t.id,
-      symbol: t.symbol,
-      name: t.name,
-      decimals: t.decimals,
-      logoURI: t.icon || undefined,
-      tags: t.tags || [],
-    }));
-    cachedTokens = tokens;
-    return tokens;
-  }
-  throw new Error('Invalid response structure from Jupiter Tokens API');
+
+  // Fallback to local metadata mapping
+  const fallbackTokens: Token[] = Object.entries(COIN_METADATA).map(([mint, meta]) => ({
+    address: mint,
+    symbol: meta.symbol,
+    name: meta.name,
+    decimals: meta.decimals,
+    logoURI: meta.logoURI,
+    tags: ['verified'],
+  }));
+  cachedTokens = fallbackTokens;
+  return fallbackTokens;
 }
 
 export const MIN_LIQUIDITY_THRESHOLD = 50000;
@@ -58,8 +73,7 @@ export async function verifyJupiterToken(mint: string): Promise<Token | null> {
       return matched;
     }
   } catch (err) {
-    console.error(`Error verifying token ${mint} on Jupiter:`, err);
-    throw err;
+    console.warn(`Error verifying token ${mint} on Jupiter:`, err);
   }
   return null;
 }
@@ -68,6 +82,18 @@ export async function verifyJupiterToken(mint: string): Promise<Token | null> {
  * Fetches token metadata for a single mint from tokens.jup.ag API.
  */
 export async function fetchTokenMetadata(mint: string): Promise<Token | null> {
+  // First, check if we have it in our local static registry
+  if (COIN_METADATA[mint]) {
+    const meta = COIN_METADATA[mint];
+    return {
+      address: mint,
+      symbol: meta.symbol,
+      name: meta.name,
+      decimals: meta.decimals,
+      logoURI: meta.logoURI,
+    };
+  }
+
   try {
     const res = await fetch(`https://tokens.jup.ag/token/${mint}`);
     if (!res.ok) {
@@ -84,7 +110,7 @@ export async function fetchTokenMetadata(mint: string): Promise<Token | null> {
       } as any;
     }
   } catch (err) {
-    console.error(`Error fetching token metadata for ${mint}:`, err);
+    console.warn(`Error fetching token metadata for ${mint} via Jupiter API:`, err);
   }
   return null;
 }
