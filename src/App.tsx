@@ -1634,7 +1634,7 @@ function Dashboard() {
           </div>
         </div>
         <div className="flex gap-4 text-[10px] text-slate-500">
-          <span>Round Trip Rebalancer — Non-Custodial Multi-Basket Architecture</span>
+          <span>Round Trip Rebalancer - Non-Custodial Multi-Basket Architecture</span>
         </div>
       </footer>
     </div>
