@@ -17,7 +17,7 @@ export default function Disclaimer({ onDismiss, showDismissButton = false }: Dis
             Risk Disclosure & Strategy Warning
           </h4>
           <p className="text-slate-300 text-xs mt-1.5 leading-relaxed font-sans font-normal">
-            This is a <strong className="text-amber-400 font-semibold">volatility-harvesting rebalancer</strong>. It profits when your chosen coins oscillate and all remain long-term viable. It will <span className="underline font-medium text-rose-400">actively move your funds into any coin that is genuinely dying</span>. Coin selection is the entire risk — choose coins you would hold through a full cycle, not lottery tickets. This is not financial advice. You approve and sign every transaction yourself.
+            This is a <strong className="text-amber-400 font-semibold">volatility-harvesting rebalancer</strong>. It profits when your chosen coins oscillate and all remain long-term viable. It will <span className="underline font-medium text-rose-400">actively move your funds into any coin that is genuinely dying</span>. Coin selection is the entire risk - choose coins you would hold through a full cycle, not lottery tickets. This is not financial advice. You approve and sign every transaction yourself.
           </p>
         </div>
         {showDismissButton && onDismiss && (
