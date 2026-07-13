@@ -147,7 +147,19 @@ function Dashboard() {
   });
 
   // Master Token metadata dictionary (mint -> Token)
-  const [tokenMetadata, setTokenMetadata] = useState<Record<string, Token>>({});
+  const [tokenMetadata, setTokenMetadata] = useState<Record<string, Token>>(() => {
+    const initial: Record<string, Token> = {};
+    Object.entries(COIN_METADATA).forEach(([mint, meta]) => {
+      initial[mint] = {
+        address: mint,
+        symbol: meta.symbol,
+        name: meta.name,
+        decimals: meta.decimals,
+        logoURI: meta.logoURI,
+      };
+    });
+    return initial;
+  });
   const attemptedMintsRef = useRef<Set<string>>(new Set());
   const [prices, setPrices] = useState<Record<string, { price: number; change24h: number }>>({});
   const [loadingPrices, setLoadingPrices] = useState(false);
@@ -181,13 +193,15 @@ function Dashboard() {
 
   // Persist state updates
   useEffect(() => {
-    localStorage.setItem('roundtrip_link_groups', JSON.stringify(groups));
+    try {
+      localStorage.setItem('roundtrip_link_groups', JSON.stringify(groups));
+    } catch (err) {
+      console.warn('Failed to save link groups to localStorage:', err);
+    }
   }, [groups]);
 
   useEffect(() => {
-    localStorage.setItem('roundtrip_snapshots', JSON.stringify(snapshots)); // fallback
-    
-    // Key by groupId
+    // Group snapshots by groupId
     const grouped: Record<string, BalanceSnapshot[]> = {};
     snapshots.forEach((s) => {
       if (s && s.groupId) {
@@ -196,13 +210,38 @@ function Dashboard() {
       }
     });
 
+    const prunedSnapshotsList: BalanceSnapshot[] = [];
+    
+    // Process and prune each group
     Object.entries(grouped).forEach(([gId, snaps]) => {
-      localStorage.setItem(`roundtrip_snapshots_${gId}`, JSON.stringify(snaps));
+      // Sort chronologically (oldest to newest)
+      const sortedSnaps = [...snaps].sort((a, b) => a.timestamp - b.timestamp);
+      // Keep only the latest 30 snapshots per group to avoid filling up localStorage
+      const prunedSnaps = sortedSnaps.slice(-30);
+      prunedSnapshotsList.push(...prunedSnaps);
+
+      try {
+        localStorage.setItem(`roundtrip_snapshots_${gId}`, JSON.stringify(prunedSnaps));
+      } catch (err) {
+        console.warn(`Failed to save snapshots for group ${gId} due to quota limit:`, err);
+        // Fallback: prune even more aggressively to keep the app working
+        try {
+          const aggressivePrune = prunedSnaps.slice(-10);
+          localStorage.setItem(`roundtrip_snapshots_${gId}`, JSON.stringify(aggressivePrune));
+        } catch (innerErr) {
+          console.error(`Failed to save snapshots for group ${gId} even with aggressive pruning:`, innerErr);
+        }
+      }
     });
+
+    // Sync state if we pruned some snapshots
+    if (prunedSnapshotsList.length < snapshots.length) {
+      setSnapshots(prunedSnapshotsList);
+    }
 
     // Clean up empty/obsolete keys
     const activeGroupIds = new Set(
-      snapshots
+      prunedSnapshotsList
         .filter((s) => s && s.groupId)
         .map((s) => s.groupId)
     );
