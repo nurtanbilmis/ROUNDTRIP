@@ -1,0 +1,190 @@
+@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "Fredoka", "Inter", sans-serif;
+}
+
+/* 1. Global typography overrides for display elements */
+h1, h2, h3, h4, h5, h6, .display-font, .font-display, .font-rounded {
+  font-family: var(--font-display) !important;
+  letter-spacing: -0.015em !important;
+}
+
+/* Keep serious risk sections strictly in readable legible sans-serif, no cartoon styling */
+.risk-disclosure, 
+.risk-disclosure *, 
+#disclaimer-banner, 
+#disclaimer-banner *, 
+#disclaimer-card, 
+#disclaimer-card *,
+.serious-warning,
+.serious-warning * {
+  font-family: var(--font-sans) !important;
+  border-radius: 0.75rem !important; /* Standard sharp-ish corners for serious sections */
+  transform: none !important;
+  box-shadow: none !important;
+  border-width: 1px !important;
+  border-color: #334155 !important; /* slate-700 */
+}
+
+/* 2. Loose, Wobbly & Playful Card containers */
+.bg-slate-900:not(.risk-disclosure):not(#disclaimer-card) {
+  /* Wobbly hand-drawn border radius */
+  border-radius: 28px 24px 32px 24px / 24px 28px 24px 30px !important;
+  border: 4px solid #000000 !important; /* Thick black comic book border */
+  box-shadow: 10px 10px 0px 0px rgba(0, 0, 0, 1) !important; /* Solid block shadow */
+  transition: all 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.25);
+  background-color: #0f172a !important; /* Darker filled comic canvas */
+}
+
+/* Outer wrapper details for sidebar lists or secondary blocks */
+.bg-slate-950:not(.risk-disclosure) {
+  border-radius: 20px 24px 18px 22px / 22px 18px 24px 20px !important;
+  border: 3.5px solid #000000 !important;
+  box-shadow: 6px 6px 0px 0px rgba(0, 0, 0, 1) !important;
+  background-color: #020617 !important;
+}
+
+/* 3. Comic Book Sticker Badge Styling (Solid, Bold Neon Pops) */
+span.badge,
+[class*="bg-emerald-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning), 
+[class*="bg-amber-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning), 
+[class*="bg-rose-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning), 
+[class*="bg-sky-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning), 
+[class*="bg-violet-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning) {
+  border: 2px solid #000000 !important;
+  transform: rotate(-1.5deg);
+  border-radius: 8px !important;
+  font-family: var(--font-display) !important;
+  box-shadow: 3px 3px 0px 0px #000000 !important;
+  font-weight: 800 !important;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.7rem !important;
+}
+
+/* Vibrant pop colors for sticker badges */
+[class*="bg-emerald-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning) {
+  background-color: #10b981 !important; /* vibrant emerald */
+  color: #022c22 !important; /* dark readable text */
+}
+
+[class*="bg-amber-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning) {
+  background-color: #f59e0b !important; /* vibrant gold yellow */
+  color: #451a03 !important;
+}
+
+[class*="bg-rose-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning) {
+  background-color: #f43f5e !important; /* bubblegum pink */
+  color: #4c0519 !important;
+}
+
+[class*="bg-sky-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning) {
+  background-color: #0ea5e9 !important; /* sky cyan */
+  color: #031b26 !important;
+}
+
+[class*="bg-violet-500/10"]:not(.risk-disclosure):not(#disclaimer-banner):not(#disclaimer-card):not(.serious-warning) {
+  background-color: #8b5cf6 !important; /* intense violet */
+  color: #1e1b4b !important;
+}
+
+/* Alternating rotation for a messy sticker collage vibe */
+span.badge:nth-child(even),
+[class*="bg-emerald-500/10"]:nth-child(even):not(.risk-disclosure),
+[class*="bg-amber-500/10"]:nth-child(even):not(.risk-disclosure),
+[class*="bg-rose-500/10"]:nth-child(even):not(.risk-disclosure) {
+  transform: rotate(2deg);
+}
+
+/* 4. Comic Book Outlined Buttons */
+button.comic-btn:not([disabled]) {
+  font-family: var(--font-display) !important;
+  font-weight: 800 !important;
+  transition: all 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.25) !important;
+  border-radius: 12px 14px 11px 13px / 13px 11px 14px 12px !important;
+  border: 2.5px solid #000000 !important; /* Bold comic outline */
+  box-shadow: 4px 4px 0px 0px #000000 !important; /* Blocky dark drop shadow */
+  position: relative;
+}
+
+/* Slight scale up & enhanced shadow on hover - no translation or rotation to prevent click swallowing */
+button.comic-btn:not([disabled]):hover {
+  transform: scale(1.03) !important;
+  box-shadow: 6px 6px 0px 0px #000000 !important;
+}
+
+button.comic-btn:not([disabled]):active {
+  transform: scale(0.97) !important;
+  box-shadow: 2px 2px 0px 0px #000000 !important;
+}
+
+/* Special styling for primary action buttons with neon fills */
+button.comic-btn.bg-emerald-500:not([disabled]), 
+button.comic-btn[class*="bg-emerald-600"]:not([disabled]) {
+  background-color: #10b981 !important;
+  color: #000000 !important;
+  border: 3px solid #000000 !important;
+  box-shadow: 4px 4px 0px 0px #000000 !important;
+}
+button.comic-btn.bg-emerald-500:not([disabled]):hover, 
+button.comic-btn[class*="bg-emerald-600"]:not([disabled]):hover {
+  background-color: #34d399 !important;
+  box-shadow: 6px 6px 0px 0px #000000 !important;
+}
+
+button.comic-btn.bg-rose-500:not([disabled]), 
+button.comic-btn[class*="bg-rose-600"]:not([disabled]) {
+  background-color: #f43f5e !important;
+  color: #000000 !important;
+  border: 3px solid #000000 !important;
+  box-shadow: 4px 4px 0px 0px #000000 !important;
+}
+button.comic-btn.bg-rose-500:not([disabled]):hover, 
+button.comic-btn[class*="bg-rose-600"]:not([disabled]):hover {
+  background-color: #fb7185 !important;
+  box-shadow: 6px 6px 0px 0px #000000 !important;
+}
+
+/* Modal overlays blur */
+div.fixed.inset-0 {
+  backdrop-filter: blur(6px);
+}
+
+/* Input and dropdown elements */
+input[type="text"], input[type="number"], select {
+  border-radius: 12px !important;
+  border: 3px solid #000000 !important;
+  font-family: var(--font-sans) !important;
+  transition: all 0.2s ease !important;
+  box-shadow: 4px 4px 0px 0px rgba(0, 0, 0, 0.15) !important;
+}
+input[type="text"]:focus, input[type="number"]:focus, select:focus {
+  border-color: #10b981 !important;
+  box-shadow: 4px 4px 0px 0px #10b981 !important;
+  outline: none !important;
+}
+
+/* App Logo transformed into a high-visibility graffiti-sticker tag */
+.app-logo {
+  font-family: var(--font-display) !important;
+  font-weight: 900 !important;
+  transform: rotate(-2.5deg);
+  display: inline-block;
+  background-color: #10b981 !important;
+  color: #000000 !important;
+  padding: 0.4rem 1.2rem !important;
+  border: 3.5px solid #000000 !important;
+  border-radius: 12px !important;
+  box-shadow: 5px 5px 0px 0px #000000 !important;
+  text-transform: uppercase;
+}
+
+.app-logo:hover {
+  transform: rotate(1deg) scale(1.05);
+  background-color: #34d399 !important;
+  transition: all 0.2s ease-in-out;
+}
