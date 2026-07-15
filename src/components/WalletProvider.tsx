@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { WalletType } from '../types';
 import { buildSwapTransaction } from '../jupiter';
@@ -15,10 +15,7 @@ import {
 // Import Solana Wallet Adapter CSS
 import '@solana/wallet-adapter-react-ui/styles.css';
 
-// Standard token program ID
-const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-// Token-2022 program ID
-const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCX87Y18zp');
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 
 interface WalletContextType {
   publicKey: string | null;
@@ -41,6 +38,8 @@ interface WalletContextType {
   addDemoFunds: (mint: string, amountHuman: number, decimals: number) => void;
   rpcUrl: string;
   setRpcUrl: (url: string) => void;
+  slippageBps: number;
+  setSlippageBps: (bps: number) => void;
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
@@ -63,7 +62,9 @@ const WalletInnerProvider: React.FC<{
   children: React.ReactNode;
   rpcUrl: string;
   setRpcUrl: (url: string) => void;
-}> = ({ children, rpcUrl, setRpcUrl }) => {
+  slippageBps: number;
+  setSlippageBps: (bps: number) => void;
+}> = ({ children, rpcUrl, setRpcUrl, slippageBps, setSlippageBps }) => {
   const baseWallet = useWallet();
   const walletModal = useWalletModal();
 
@@ -83,6 +84,11 @@ const WalletInnerProvider: React.FC<{
     }
     return DEFAULT_DEMO_BALANCES;
   });
+
+  const demoBalancesRef = useRef<Record<string, number>>(demoBalances);
+  useEffect(() => {
+    demoBalancesRef.current = demoBalances;
+  }, [demoBalances]);
 
   // Track real on-chain balances fetched from RPC
   const [onChainBalances, setOnChainBalances] = useState<Record<string, number>>({});
@@ -275,18 +281,20 @@ const WalletInnerProvider: React.FC<{
       return new Promise((resolve, reject) => {
         setTimeout(() => {
           try {
+            const current = demoBalancesRef.current;
             const rawAmountIn = amountBase;
-            const currentRawInBalance = demoBalances[inputMint] || 0;
+            const currentRawInBalance = current[inputMint] || 0;
             const rawAmountOut = parseInt(quoteResponse.outAmount || '0');
 
             if (currentRawInBalance < rawAmountIn) {
               throw new Error(`Insufficient simulated balance. Swap rejected.`);
             }
 
-            const updatedBalances = { ...demoBalances };
+            const updatedBalances = { ...current };
             updatedBalances[inputMint] = Math.max(0, currentRawInBalance - rawAmountIn);
             updatedBalances[outputMint] = (updatedBalances[outputMint] || 0) + rawAmountOut;
 
+            demoBalancesRef.current = updatedBalances;
             localStorage.setItem('roundtrip_demo_balances', JSON.stringify(updatedBalances));
             setDemoBalances(updatedBalances);
 
@@ -388,6 +396,9 @@ const WalletInnerProvider: React.FC<{
       // Refresh balances on success
       await refreshBalances();
 
+      // Mark that a real swap has occurred
+      localStorage.setItem('roundtrip_has_real_swapped', 'true');
+
       return txId;
     } catch (err: any) {
       console.error('Real transaction failed:', err);
@@ -411,6 +422,8 @@ const WalletInnerProvider: React.FC<{
         addDemoFunds,
         rpcUrl,
         setRpcUrl,
+        slippageBps,
+        setSlippageBps,
       }}
     >
       {children}
@@ -423,16 +436,31 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return localStorage.getItem('roundtrip_rpc_url') || 'https://api.mainnet-beta.solana.com';
   });
 
+  const [slippageBps, setSlippageBps] = useState<number>(() => {
+    const saved = localStorage.getItem('roundtrip_slippage_bps');
+    return saved ? parseInt(saved, 10) : 50; // default 50 bps (0.5%)
+  });
+
   const setRpcUrlWithSave = (url: string) => {
     setRpcUrl(url);
     localStorage.setItem('roundtrip_rpc_url', url);
+  };
+
+  const setSlippageBpsWithSave = (bps: number) => {
+    setSlippageBps(bps);
+    localStorage.setItem('roundtrip_slippage_bps', bps.toString());
   };
 
   return (
     <ConnectionProvider endpoint={rpcUrl}>
       <SolanaBaseWalletProvider wallets={[]} autoConnect>
         <WalletModalProvider>
-          <WalletInnerProvider rpcUrl={rpcUrl} setRpcUrl={setRpcUrlWithSave}>
+          <WalletInnerProvider
+            rpcUrl={rpcUrl}
+            setRpcUrl={setRpcUrlWithSave}
+            slippageBps={slippageBps}
+            setSlippageBps={setSlippageBpsWithSave}
+          >
             {children}
           </WalletInnerProvider>
         </WalletModalProvider>

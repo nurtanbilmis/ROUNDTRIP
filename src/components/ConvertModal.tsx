@@ -55,7 +55,7 @@ export default function ConvertModal({
   onClose,
   onSuccess,
 }: ConvertModalProps) {
-  const { balances, addDemoFunds, type, publicKey, signAndExecuteSwap, refreshBalances } = useSolanaWallet();
+  const { balances, addDemoFunds, type, publicKey, signAndExecuteSwap, refreshBalances, slippageBps } = useSolanaWallet();
   
   const [chosenGroupId, setChosenGroupId] = useState<string | null>(activeGroupId);
   const [walletTokens, setWalletTokens] = useState<Token[]>(POPULAR_TOKENS_METADATA);
@@ -123,6 +123,7 @@ export default function ConvertModal({
   const [executing, setExecuting] = useState(false);
   const [executionStep, setExecutionStep] = useState<number>(0);
   const [executedSteps, setExecutedSteps] = useState<Record<number, { success: boolean; txId?: string; error?: string }>>({});
+  const hasStarted = Object.keys(executedSteps).length > 0;
   
   // Get user balance for the deposit token
   const baseBalance = balances[depositToken.address] || 0;
@@ -179,7 +180,7 @@ export default function ConvertModal({
           inputMint: depositToken.address,
           outputMint: swap.targetToken.address,
           amount: baseAmountString,
-          slippageBps: 50, // 0.5%
+          slippageBps, // Use dynamic slippage tolerance setting
         });
 
         const outAmount = quoteRes ? parseInt(quoteRes.outAmount || '0') : 0;
@@ -217,6 +218,8 @@ export default function ConvertModal({
 
   // Execute allocation swaps
   const handleExecuteConvert = async () => {
+    if (executing) return;
+
     const amountNum = parseFloat(depositAmount) || 0;
     if (amountNum <= 0 || !chosenGroupId || depositToken.decimals === undefined) return;
 
@@ -230,7 +233,6 @@ export default function ConvertModal({
     }
 
     setExecuting(true);
-    setExecutedSteps({});
 
     // If there are zero swaps needed (e.g. they only picked 1 coin, or they deposit the only selected coin)
     if (requiredSwaps.length === 0) {
@@ -240,26 +242,28 @@ export default function ConvertModal({
       return;
     }
 
+    const localSteps = { ...executedSteps };
+
     // Process swaps one by one
     for (let i = 0; i < requiredSwaps.length; i++) {
+      if (localSteps[i]?.success) {
+        continue;
+      }
+
       setExecutionStep(i + 1);
       const swap = requiredSwaps[i];
       const quoteInfo = quotes[swap.targetToken.address];
 
       if (!quoteInfo || !quoteInfo.quote || swap.targetToken.decimals === undefined) {
-        setExecutedSteps((prev) => ({
-          ...prev,
-          [i]: { success: false, error: quoteInfo?.error || 'No valid quote available' },
-        }));
+        localSteps[i] = { success: false, error: quoteInfo?.error || 'No valid quote available' };
+        setExecutedSteps({ ...localSteps });
         setExecuting(false);
         return;
       }
 
       if (swapUsdValue < 1.50) {
-        setExecutedSteps((prev) => ({
-          ...prev,
-          [i]: { success: false, error: 'Trade size too small to route (min $1.50 USD)' },
-        }));
+        localSteps[i] = { success: false, error: 'Trade size too small to route (min $1.50 USD)' };
+        setExecutedSteps({ ...localSteps });
         setExecuting(false);
         return;
       }
@@ -275,16 +279,12 @@ export default function ConvertModal({
           outputDecimals: swap.targetToken.decimals,
         });
 
-        setExecutedSteps((prev) => ({
-          ...prev,
-          [i]: { success: true, txId },
-        }));
+        localSteps[i] = { success: true, txId };
+        setExecutedSteps({ ...localSteps });
       } catch (err: any) {
         console.error(`Execution failed for step ${i + 1}:`, err);
-        setExecutedSteps((prev) => ({
-          ...prev,
-          [i]: { success: false, error: err?.message || 'Transaction rejected' },
-        }));
+        localSteps[i] = { success: false, error: err?.message || 'Transaction rejected' };
+        setExecutedSteps({ ...localSteps });
         // Stop execution on failure
         setExecuting(false);
         return;
@@ -292,8 +292,12 @@ export default function ConvertModal({
     }
 
     setExecuting(false);
-    const fresh = await refreshBalances();
-    onSuccess(chosenGroupId, fresh);
+
+    const finalAllSucceeded = requiredSwaps.every((_, idx) => localSteps[idx]?.success);
+    if (finalAllSucceeded) {
+      const fresh = await refreshBalances();
+      onSuccess(chosenGroupId, fresh);
+    }
   };
 
   // Group selection screen if none is chosen yet
@@ -358,10 +362,10 @@ export default function ConvertModal({
           <div>
             <h3 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
               <Wallet className="w-5 h-5 text-emerald-400" />
-              Convert & Link Split
+              Add to Basket (Split)
             </h3>
             <p className="text-xs text-slate-400 mt-1">
-              Convert from any coin. The app auto-splits it across the {tokenCount} tokens in <strong className="text-white">{selectedGroup?.name}</strong> at {targetPercent.toFixed(1)}% each.
+              Choose a funding coin and amount. The app will swap it evenly into the basket members (each member gets 1/n of the amount).
             </p>
           </div>
           <button
@@ -374,25 +378,35 @@ export default function ConvertModal({
         </div>
 
         <div className="flex-grow overflow-y-auto p-6 space-y-6">
-          {executing ? (
+          {hasStarted ? (
             /* Execution Flow State */
             <div className="py-12 flex flex-col items-center justify-center text-center space-y-5">
-              <Loader2 className="w-12 h-12 text-emerald-500 animate-spin" />
+              {executing ? (
+                <Loader2 className="w-12 h-12 text-emerald-500 animate-spin" />
+              ) : (
+                <AlertCircle className="w-12 h-12 text-rose-500" />
+              )}
               <div className="space-y-1">
-                <h4 className="text-lg font-bold text-white">Converting & Linking Allocation</h4>
-                <p className="text-sm text-slate-400">
-                  Step {executionStep} of {requiredSwaps.length}: Converting{' '}
-                  <span className="text-white font-medium">{requiredSwaps[executionStep - 1]?.depositAmountPart.toFixed(2)} {depositToken.symbol}</span>{' '}
-                  to{' '}
-                  <span className="text-emerald-400 font-medium">{requiredSwaps[executionStep - 1]?.targetToken.symbol}</span>
-                </p>
+                <h4 className="text-lg font-bold text-white">Adding to Basket</h4>
+                {executing ? (
+                  <p className="text-sm text-slate-400">
+                    Step {executionStep} of {requiredSwaps.length}: Swapping{' '}
+                    <span className="text-white font-medium">{requiredSwaps[executionStep - 1]?.depositAmountPart?.toFixed(2)} {depositToken.symbol}</span>{' '}
+                    to{' '}
+                    <span className="text-emerald-400 font-medium">{requiredSwaps[executionStep - 1]?.targetToken?.symbol}</span>
+                  </p>
+                ) : (
+                  <p className="text-sm text-rose-400">
+                    Some swaps failed or were rejected.
+                  </p>
+                )}
               </div>
 
               {/* Status List */}
               <div className="w-full max-w-md bg-slate-950 rounded-xl border border-slate-800 p-4 space-y-3 text-left">
                 {requiredSwaps.map((swap, idx) => {
                   const stepStatus = executedSteps[idx];
-                  const isCurrent = executionStep === idx + 1;
+                  const isCurrent = executing && executionStep === idx + 1;
                   return (
                     <div key={swap.targetToken.address} className="flex items-center justify-between text-xs">
                       <div className="flex items-center gap-2 min-w-0">
@@ -403,8 +417,8 @@ export default function ConvertModal({
                       </div>
                       <div>
                         {isCurrent && <span className="text-emerald-400 font-semibold animate-pulse">Awaiting Signature...</span>}
-                        {stepStatus?.success && <span className="text-emerald-400 font-semibold">Success</span>}
-                        {stepStatus?.error && <span className="text-rose-400 font-semibold">Failed</span>}
+                        {stepStatus?.success && <span className="text-emerald-400 font-semibold text-emerald-400">Success</span>}
+                        {stepStatus?.error && <span className="text-rose-400 font-semibold text-right max-w-[150px] truncate" title={stepStatus.error}>Failed</span>}
                         {!stepStatus && !isCurrent && <span className="text-slate-500">Pending</span>}
                       </div>
                     </div>
@@ -425,7 +439,7 @@ export default function ConvertModal({
               {/* Asset Selector */}
               <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  1. Select Input Currency {loadingTokens && <span className="text-[10px] text-slate-500 lowercase italic animate-pulse">(updating...)</span>}
+                  1. Select Funding Coin {loadingTokens && <span className="text-[10px] text-slate-500 lowercase italic animate-pulse">(updating...)</span>}
                 </label>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
                   {walletTokens.map((token) => (
@@ -453,7 +467,7 @@ export default function ConvertModal({
               {/* Amount Input */}
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
-                  <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">2. Enter Allocation Amount</label>
+                  <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">2. Enter Funding Amount</label>
                   <span className="text-xs text-slate-500">
                     Wallet Balance: <strong className="text-slate-300">{humanBalance.toFixed(4)} {depositToken.symbol}</strong>
                   </span>
@@ -495,6 +509,10 @@ export default function ConvertModal({
                   )}
                 </div>
 
+                <div className="text-xs text-slate-400 bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
+                  This will swap your <strong className="text-white">{depositAmount || '0'} {depositToken.symbol}</strong> into the <strong className="text-white">{tokenCount}</strong> basket coins (~{(parseFloat(depositAmount) / tokenCount || 0).toFixed(2)} {depositToken.symbol} each).
+                </div>
+
                 <div className="space-y-3">
                   {/* The Input Currency Retention */}
                   {selectedTokens.some((t) => t.address === depositToken.address) && (
@@ -532,7 +550,7 @@ export default function ConvertModal({
                             </div>
                           )}
                           <div className="text-[10px] text-slate-500">
-                            Convert {swap.depositAmountPart.toFixed(2)} {depositToken.symbol}
+                            Swap {swap.depositAmountPart.toFixed(2)} {depositToken.symbol}
                           </div>
                         </div>
                       </div>
@@ -549,6 +567,12 @@ export default function ConvertModal({
                   </span>
                 </div>
               )}
+
+              {type !== 'demo' && !localStorage.getItem('roundtrip_has_real_swapped') && (
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg text-xs leading-relaxed animate-in fade-in duration-200">
+                  <strong>First live swap:</strong> Confirm your wallet prompt appears and the transaction confirms before continuing.
+                </div>
+              )}
             </>
           )}
         </div>
@@ -560,25 +584,32 @@ export default function ConvertModal({
             disabled={executing}
             className="comic-btn flex-grow bg-slate-850 hover:bg-slate-800 text-white font-semibold py-3 rounded-lg text-sm transition-all disabled:opacity-50 cursor-pointer"
           >
-            Cancel
+            {hasStarted ? 'Close' : 'Cancel'}
           </button>
-          <button
-            onClick={handleExecuteConvert}
-            disabled={executing || loadingQuotes || parseFloat(depositAmount) <= 0 || !publicKey}
-            className="comic-btn flex-grow bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold py-3 rounded-lg text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md cursor-pointer"
-          >
-            {executing ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                Converting...
-              </>
-            ) : (
-              <>
-                Confirm & Convert
-                <ArrowRight className="w-4 h-4" />
-              </>
-            )}
-          </button>
+          {(!hasStarted || requiredSwaps.some((_, idx) => executedSteps[idx] && !executedSteps[idx].success)) && (
+            <button
+              onClick={handleExecuteConvert}
+              disabled={executing || loadingQuotes || parseFloat(depositAmount) <= 0 || !publicKey}
+              className="comic-btn flex-grow bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold py-3 rounded-lg text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md cursor-pointer"
+            >
+              {executing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                  Swapping...
+                </>
+              ) : hasStarted ? (
+                <>
+                  <RefreshCw className="w-4 h-4" />
+                  Retry Failed Steps
+                </>
+              ) : (
+                <>
+                  Confirm & Add to Basket
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          )}
         </div>
       </div>
     </div>
