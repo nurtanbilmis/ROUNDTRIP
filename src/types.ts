@@ -285,6 +285,8 @@ export const COIN_METADATA: Record<string, { symbol: string; name: string; decim
 
 export const DEFAULT_POPULAR_MINTS = [
   'So11111111111111111111111111111111111111112', // SOL
+  '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // ETH
+  'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij', // cbBTC
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
   'JUPyiwrYJFskUPiFG4gpvXvjTE76SreV8NToA8Y5YyJ', // JUP
   '5GgRAEmv8ZxF2PR5hY72Qs5x1bnQ6UK2RbTPoqJ3wSwW', // PAXG

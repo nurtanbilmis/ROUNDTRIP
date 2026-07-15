@@ -90,6 +90,7 @@ export default function AllocationView({
   const [rebalanceInitiated, setRebalanceInitiated] = useState(false);
   const [previewActive, setPreviewActive] = useState(false);
   const [showExecuteAnywayConfirm, setShowExecuteAnywayConfirm] = useState(false);
+  const [selectedSwapIndices, setSelectedSwapIndices] = useState<Record<number, boolean>>({});
   
   const [swapQuotes, setSwapQuotes] = useState<Record<number, { quote: any; error?: string }>>({});
   const [showTooltip, setShowTooltip] = useState(false);
@@ -100,6 +101,7 @@ export default function AllocationView({
   useEffect(() => {
     setRebalanceInitiated(false);
     setPreviewActive(false);
+    setSelectedSwapIndices({});
   }, [group.id]);
 
   // States for membership editing and warnings
@@ -358,6 +360,16 @@ export default function AllocationView({
   const activeSwaps = previewActive ? previewSwaps : currentSwaps;
   const previewRebalanceAvailable = groupBalances.filter(item => item.amountHuman > 0 && item.usdValue > 0).length >= 2;
 
+  // Initialize all active swaps as selected by default when activeSwaps length or preview state changes
+  useEffect(() => {
+    if (rebalancing) return;
+    const initialSelection: Record<number, boolean> = {};
+    activeSwaps.forEach((_, idx) => {
+      initialSelection[idx] = true;
+    });
+    setSelectedSwapIndices(initialSelection);
+  }, [activeSwaps.length, previewActive, rebalanceInitiated, rebalancing]);
+
   // Find SOL price for network fee estimation
   const solPrice = prices['So11111111111111111111111111111111111111112']?.price || 140;
 
@@ -365,6 +377,8 @@ export default function AllocationView({
   let totalNetworkFeeUsd = 0;
 
   activeSwaps.forEach((swap, idx) => {
+    if (selectedSwapIndices[idx] === false) return; // skip unselected trades
+
     const quoteInfo = swapQuotes[idx];
     if (quoteInfo?.quote) {
       const outputCoinPrice = prices[swap.outputMint]?.price || 0;
@@ -385,6 +399,8 @@ export default function AllocationView({
     let netUsdChange = 0;
 
     activeSwaps.forEach((swap, idx) => {
+      if (selectedSwapIndices[idx] === false) return; // skip unselected trades
+
       const quoteInfo = swapQuotes[idx];
       const quotedOutput = quoteInfo?.quote 
         ? (parseInt(quoteInfo.quote.outAmount || '0') / Math.pow(10, swap.outputDecimals))
@@ -440,6 +456,9 @@ export default function AllocationView({
     }
   };
 
+  // Generate serialized key representing the active swaps to safely depend on for quote refreshing
+  const activeSwapsKey = activeSwaps.map(s => `${s.inputMint}-${s.outputMint}-${s.amount}`).join(',');
+
   // Load quotes from Jupiter for Rebalancing Swaps ON DEMAND (only when user initiates rebalance)
   useEffect(() => {
     async function loadQuotes() {
@@ -484,7 +503,7 @@ export default function AllocationView({
     if (rebalanceAvailable && (rebalanceInitiated || previewActive) && !rebalancing && !isCashingOut) {
       loadQuotes();
     }
-  }, [rebalanceAvailable, rebalanceInitiated, previewActive, rebalancing, group.id, isCashingOut, activeSwaps.length]);
+  }, [rebalanceAvailable, rebalanceInitiated, previewActive, rebalancing, group.id, isCashingOut, activeSwapsKey]);
 
   // Execute sequential swaps for rebalancing
   const handleExecuteRebalance = async () => {
@@ -495,11 +514,18 @@ export default function AllocationView({
 
     const localStatus = { ...rebalanceStatus };
 
-    for (let i = 0; i < activeSwaps.length; i++) {
-      if (localStatus[i]?.success) {
-        continue;
-      }
+    // Filter to selected indices that are not yet successfully executed
+    const selectedIndices = activeSwaps
+      .map((_, idx) => idx)
+      .filter(idx => selectedSwapIndices[idx] !== false && !localStatus[idx]?.success);
 
+    if (selectedIndices.length === 0) {
+      setRebalancing(false);
+      return;
+    }
+
+    for (let seqIdx = 0; seqIdx < selectedIndices.length; seqIdx++) {
+      const i = selectedIndices[seqIdx];
       setRebalanceStep(i + 1);
       const swap = activeSwaps[i];
       const quoteInfo = swapQuotes[i];
@@ -536,8 +562,11 @@ export default function AllocationView({
 
     setRebalancing(false);
 
-    // Verify if indeed EVERY step is a success
-    const finalAllSucceeded = activeSwaps.every((_, idx) => localStatus[idx]?.success);
+    // Verify if indeed EVERY SELECTED step is a success
+    const finalAllSucceeded = activeSwaps.every((_, idx) => {
+      if (selectedSwapIndices[idx] === false) return true; // skip unselected
+      return localStatus[idx]?.success;
+    });
 
     if (finalAllSucceeded) {
       await onRefreshPrices();
@@ -546,9 +575,66 @@ export default function AllocationView({
       const freshTotalUsdValue = freshGroupBalances.reduce((sum, item) => sum + item.usdValue, 0);
 
       onSaveSnapshot(group.id, group.name, freshGroupBalances, freshTotalUsdValue, 'rebalance');
-      setRebalanceInitiated(false);
-      setPreviewActive(false);
-      setRebalanceStatus({}); // Clear status on full success
+      
+      // Reset statuses so we can re-evaluate remaining trades
+      setRebalanceStatus({});
+      setRebalanceStep(0);
+      setSelectedSwapIndices({});
+    }
+  };
+
+  // Execute a single specific trade from the list
+  const handleExecuteSingleTrade = async (targetIdx: number) => {
+    if (rebalancing) return;
+    const swap = activeSwaps[targetIdx];
+    if (!swap) return;
+
+    setRebalancing(true);
+    setRebalanceStep(targetIdx + 1);
+
+    const localStatus = { ...rebalanceStatus };
+    const quoteInfo = swapQuotes[targetIdx];
+
+    if (!quoteInfo || !quoteInfo.quote) {
+      const errStr = quoteInfo?.error || 'Quote failed / Skipped';
+      localStatus[targetIdx] = { success: false, error: errStr };
+      setRebalanceStatus({ ...localStatus });
+      setRebalancing(false);
+      return;
+    }
+
+    try {
+      const txId = await signAndExecuteSwap({
+        inputMint: swap.inputMint,
+        outputMint: swap.outputMint,
+        amountBase: swap.amount,
+        quoteResponse: quoteInfo.quote,
+        inputDecimals: swap.inputDecimals,
+        outputDecimals: swap.outputDecimals,
+      });
+
+      localStatus[targetIdx] = { success: true, txId };
+      setRebalanceStatus({ ...localStatus });
+      setRebalancing(false);
+
+      // Successfully finished the single trade - let's refresh prices and balances
+      await onRefreshPrices();
+      const freshBalances = await refreshBalances();
+      const freshGroupBalances = getGroupBalances(freshBalances);
+      const freshTotalUsdValue = freshGroupBalances.reduce((sum, item) => sum + item.usdValue, 0);
+
+      onSaveSnapshot(group.id, group.name, freshGroupBalances, freshTotalUsdValue, 'rebalance');
+      
+      // Reset rebalance and selection states for remaining trades
+      setRebalanceStatus({});
+      setRebalanceStep(0);
+      setSelectedSwapIndices({});
+    } catch (err: any) {
+      console.error(`Single rebalance trade failed:`, err);
+      const errStr = err?.message || 'Transaction rejected';
+      localStatus[targetIdx] = { success: false, error: errStr };
+      setRebalanceStatus({ ...localStatus });
+      setRebalancing(false);
     }
   };
 
@@ -1132,14 +1218,33 @@ export default function AllocationView({
                         }
                       </p>
                     </div>
-                    {loadingQuotes ? (
-                      <span className="text-xs text-slate-500 flex items-center gap-1.5 animate-pulse">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
-                        Quoting Routes...
-                      </span>
-                    ) : (
-                      <span className="text-xs text-emerald-400 font-bold uppercase tracking-wider">Fresh Route Quotes</span>
-                    )}
+                    <div className="flex items-center gap-4">
+                      {/* Select All / None toggle */}
+                      {!rebalancing && activeSwaps.length > 0 && (
+                        <button
+                          onClick={() => {
+                            const allSelected = activeSwaps.every((_, i) => selectedSwapIndices[i] !== false);
+                            const updated: Record<number, boolean> = {};
+                            activeSwaps.forEach((_, i) => {
+                              updated[i] = !allSelected;
+                            });
+                            setSelectedSwapIndices(updated);
+                          }}
+                          className="text-xs text-emerald-400 hover:text-emerald-300 font-bold cursor-pointer transition-colors"
+                        >
+                          {activeSwaps.every((_, i) => selectedSwapIndices[i] !== false) ? 'Deselect All' : 'Select All'}
+                        </button>
+                      )}
+
+                      {loadingQuotes ? (
+                        <span className="text-xs text-slate-500 flex items-center gap-1.5 animate-pulse">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                          Quoting Routes...
+                        </span>
+                      ) : (
+                        <span className="text-xs text-emerald-400 font-bold uppercase tracking-wider">Fresh Route Quotes</span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Trades List */}
@@ -1157,65 +1262,97 @@ export default function AllocationView({
                       const swapSlippageUsd = Math.max(0, swap.usdValue - (quotedOutput * outputCoinPrice));
 
                       return (
-                        <div key={idx} className={`p-4 rounded-xl border ${isCrashCase ? 'bg-rose-950/20 border-rose-500/20' : 'bg-slate-950 border-slate-850'} flex flex-col sm:flex-row justify-between sm:items-center gap-3 text-xs`}>
-                          <div className="space-y-1.5 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-slate-500 font-bold uppercase tracking-wider">SELL</span>
-                              <strong className="text-white font-black">
-                                {(swap.amount / Math.pow(10, swap.inputDecimals)).toLocaleString(undefined, { maximumFractionDigits: 6 })} {swap.inputSymbol}
-                              </strong>
-                              <span className="text-slate-600">→</span>
-                              <span className="text-slate-500 font-bold uppercase tracking-wider">BUY</span>
-                              <strong className={`font-black ${isCrashCase ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                {quoteInfo && quoteInfo.quote ? (
-                                  quotedOutput.toLocaleString(undefined, { maximumFractionDigits: 6 })
-                                ) : (
-                                  `~${idealOutput.toLocaleString(undefined, { maximumFractionDigits: 6 })}`
-                                )} {swap.outputSymbol}
-                              </strong>
-                            </div>
-                            
-                            {/* Cost breakdown for this trade if quote available */}
-                            {quoteInfo && quoteInfo.quote && (
-                              <div className="text-[10px] text-slate-500 flex items-center gap-2">
-                                <span>Ideal: <strong className="text-slate-400">{idealOutput.toLocaleString(undefined, { maximumFractionDigits: 4 })} {swap.outputSymbol}</strong></span>
-                                <span className="text-slate-700">|</span>
-                                <span>Est. Slippage & Fees: <strong className="text-amber-400">${swapSlippageUsd.toFixed(3)}</strong></span>
-                              </div>
-                            )}
-
-                            <div className="text-[10px] text-slate-500">
-                              Match size: <strong className="text-slate-400">${swap.usdValue.toFixed(2)}</strong>
-                            </div>
+                        <div key={idx} className={`p-4 rounded-xl border ${isCrashCase ? 'bg-rose-950/20 border-rose-500/20' : 'bg-slate-950 border-slate-850'} flex gap-4 items-center text-xs`}>
+                          {/* Granular Checkbox Selection */}
+                          <div className="flex items-center justify-center min-w-[20px]">
+                            <input
+                              type="checkbox"
+                              checked={selectedSwapIndices[idx] !== false}
+                              onChange={() => {
+                                setSelectedSwapIndices(prev => ({
+                                  ...prev,
+                                  [idx]: !prev[idx]
+                                }));
+                              }}
+                              disabled={rebalancing}
+                              className="w-4 h-4 rounded border-slate-800 bg-slate-900 text-emerald-500 focus:ring-emerald-500/50 focus:ring-offset-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
                           </div>
 
-                          <div className="text-right">
-                            {rebalanceStatus[idx] ? (
-                              rebalanceStatus[idx].success ? (
-                                <span className="text-xs text-emerald-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30">
-                                  <Check className="w-3.5 h-3.5 text-emerald-400" /> Swap Succeeded
-                                </span>
-                              ) : (
-                                <span className="text-xs text-rose-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/30 animate-pulse" title={rebalanceStatus[idx].error}>
-                                  <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> Swap Failed
-                                </span>
-                              )
-                            ) : rebalancing && rebalanceStep === idx + 1 ? (
-                              <span className="text-xs text-amber-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 animate-pulse">
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" /> Signing Swap...
-                              </span>
-                            ) : quoteInfo?.error ? (
-                              <span className="text-xs text-rose-400 font-bold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/5 border border-rose-500/10">
-                                <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> 
-                                {quoteInfo.error.includes('small') ? 'Too Small to Route' : 'Quote Failed'}
-                              </span>
-                            ) : quoteInfo ? (
-                              <span className="text-xs text-emerald-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/5 border border-emerald-500/10">
-                                <Check className="w-3.5 h-3.5 text-emerald-400" /> Direct Route Verified
-                              </span>
-                            ) : (
-                              <span className="text-[10px] text-slate-500 animate-pulse">Verifying Route...</span>
-                            )}
+                          <div className="flex-grow flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+                            <div className="space-y-1.5 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-slate-500 font-bold uppercase tracking-wider">SELL</span>
+                                <strong className="text-white font-black">
+                                  {(swap.amount / Math.pow(10, swap.inputDecimals)).toLocaleString(undefined, { maximumFractionDigits: 6 })} {swap.inputSymbol}
+                                </strong>
+                                <span className="text-slate-600">→</span>
+                                <span className="text-slate-500 font-bold uppercase tracking-wider">BUY</span>
+                                <strong className={`font-black ${isCrashCase ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                  {quoteInfo && quoteInfo.quote ? (
+                                    quotedOutput.toLocaleString(undefined, { maximumFractionDigits: 6 })
+                                  ) : (
+                                    `~${idealOutput.toLocaleString(undefined, { maximumFractionDigits: 6 })}`
+                                  )} {swap.outputSymbol}
+                                </strong>
+                              </div>
+                              
+                              {/* Cost breakdown for this trade if quote available */}
+                              {quoteInfo && quoteInfo.quote && (
+                                <div className="text-[10px] text-slate-500 flex items-center gap-2">
+                                  <span>Ideal: <strong className="text-slate-400">{idealOutput.toLocaleString(undefined, { maximumFractionDigits: 4 })} {swap.outputSymbol}</strong></span>
+                                  <span className="text-slate-700">|</span>
+                                  <span>Est. Slippage & Fees: <strong className="text-amber-400">${swapSlippageUsd.toFixed(3)}</strong></span>
+                                </div>
+                              )}
+
+                              <div className="text-[10px] text-slate-500">
+                                Match size: <strong className="text-slate-400">${swap.usdValue.toFixed(2)}</strong>
+                              </div>
+                            </div>
+
+                            {/* Status & Inline Execute Action */}
+                            <div className="flex flex-col sm:flex-row items-end sm:items-center gap-3">
+                              <div className="text-right">
+                                {rebalanceStatus[idx] ? (
+                                  rebalanceStatus[idx].success ? (
+                                    <span className="text-xs text-emerald-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30">
+                                      <Check className="w-3.5 h-3.5 text-emerald-400" /> Swap Succeeded
+                                    </span>
+                                  ) : (
+                                    <span className="text-xs text-rose-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/30 animate-pulse" title={rebalanceStatus[idx].error}>
+                                      <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> Swap Failed
+                                    </span>
+                                  )
+                                ) : rebalancing && rebalanceStep === idx + 1 ? (
+                                  <span className="text-xs text-amber-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 animate-pulse">
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" /> Signing Swap...
+                                  </span>
+                                ) : quoteInfo?.error ? (
+                                  <span className="text-xs text-rose-400 font-bold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/5 border border-rose-500/10">
+                                    <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> 
+                                    {quoteInfo.error.includes('small') ? 'Too Small to Route' : 'Quote Failed'}
+                                  </span>
+                                ) : quoteInfo ? (
+                                  <span className="text-xs text-emerald-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/5 border border-emerald-500/10">
+                                    <Check className="w-3.5 h-3.5 text-emerald-400" /> Direct Route Verified
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-slate-500 animate-pulse">Verifying Route...</span>
+                                )}
+                              </div>
+
+                              {/* Inline Quick Execution Option */}
+                              {!rebalancing && !rebalanceStatus[idx]?.success && quoteInfo?.quote && selectedSwapIndices[idx] !== false && (
+                                <button
+                                  onClick={() => handleExecuteSingleTrade(idx)}
+                                  className="px-2.5 py-1.5 bg-emerald-500/10 hover:bg-emerald-500 hover:text-slate-950 text-emerald-400 border border-emerald-500/20 font-black rounded-lg text-[10px] transition-all cursor-pointer shadow flex items-center gap-1"
+                                >
+                                  <Play className="w-2.5 h-2.5" />
+                                  Run Trade
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       );
@@ -1285,8 +1422,8 @@ export default function AllocationView({
                     <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 text-[11px] text-slate-400">
                       <p className="max-w-md">
                         {previewActive 
-                          ? `Execution will execute ${activeSwaps.length} sequential swap transactions to force rebalance to equal weight.`
-                          : `Execution requires signing ${activeSwaps.length} consecutive swap transactions. No assets ever leave your own wallet.`
+                          ? `Execution will execute the selected subset of sequential swap transactions to force rebalance to equal weight.`
+                          : `Execution requires signing selected consecutive swap transactions. No assets ever leave your own wallet.`
                         }
                       </p>
                       {type === 'demo' && (
@@ -1333,7 +1470,7 @@ export default function AllocationView({
                             handleExecuteRebalance();
                           }
                         }}
-                        disabled={rebalancing || loadingQuotes || !publicKey || activeSwaps.length === 0}
+                        disabled={rebalancing || loadingQuotes || !publicKey || activeSwaps.length === 0 || activeSwaps.filter((_, i) => selectedSwapIndices[i] !== false).length === 0}
                         className={`flex-grow py-4 rounded-xl text-sm font-extrabold transition-all flex items-center justify-center gap-2 cursor-pointer ${
                           crashWarnings.length > 0
                             ? 'bg-rose-600 hover:bg-rose-700 text-white'
@@ -1348,22 +1485,22 @@ export default function AllocationView({
                         ) : Object.keys(rebalanceStatus).length > 0 && activeSwaps.some((_, idx) => rebalanceStatus[idx] && !rebalanceStatus[idx].success) ? (
                           <>
                             <RefreshCw className="w-4.5 h-4.5" />
-                            Retry Failed Steps
+                            Retry Failed Selected Trades ({activeSwaps.filter((_, i) => selectedSwapIndices[i] !== false).length})
                           </>
                         ) : crashWarnings.length > 0 ? (
                           <>
                             <AlertTriangle className="w-4.5 h-4.5" />
-                            Override Crash Warning & Rebalance
+                            Override Crash Warning & Execute Selected ({activeSwaps.filter((_, i) => selectedSwapIndices[i] !== false).length})
                           </>
                         ) : previewActive ? (
                           <>
                             <Play className="w-4.5 h-4.5" />
-                            Execute Rebalance Anyway
+                            Execute Selected Trade(s) Anyway ({activeSwaps.filter((_, i) => selectedSwapIndices[i] !== false).length})
                           </>
                         ) : (
                           <>
                             <RefreshCw className="w-4.5 h-4.5" />
-                            Execute Equal-Weight Rebalance Now
+                            Execute Selected Trade(s) ({activeSwaps.filter((_, i) => selectedSwapIndices[i] !== false).length})
                           </>
                         )}
                       </button>
