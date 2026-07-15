@@ -3,9 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { Buffer } from 'buffer';
 
 if (typeof window !== 'undefined') {
-  if (!window.Buffer) {
-    window.Buffer = Buffer;
-  }
+  window.Buffer = Buffer;
+  globalThis.Buffer = Buffer;
   if (!(window as any).global) {
     (window as any).global = window;
   }

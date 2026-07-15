@@ -97,7 +97,7 @@ export default function HistoryView({
           <div className="space-y-1.5 max-w-md mx-auto">
             <h4 className="font-bold text-white text-base">Create a Link-Group to start</h4>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Scoreboard tracking requires active Link-Groups. Once you create a group, convert some assets, and execute a rebalance, your multi-coin scoreboard will automatically display here.
+              Scoreboard tracking requires active Link-Groups. Once you create a group, fund assets via Add to Basket, and execute a rebalance, your multi-coin scoreboard will automatically display here.
             </p>
           </div>
         </div>

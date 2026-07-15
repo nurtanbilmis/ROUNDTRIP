@@ -14,6 +14,7 @@ import HistoryView from './components/HistoryView';
 import ConfirmModal from './components/ConfirmModal';
 import { PRESETS, Preset } from './presets';
 import PresetVerifier from './components/PresetVerifier';
+import TokenLogo from './components/TokenLogo';
 import { Token, TokenBalance, BalanceSnapshot, LinkGroup, getGroupColorClasses, formatPrice, COIN_METADATA, DEFAULT_POPULAR_MINTS } from './types';
 import { fetchPricesAndInfo } from './jupiter';
 import {
@@ -37,7 +38,8 @@ import {
   Check,
   Layers,
   Sparkle,
-  MoreVertical
+  MoreVertical,
+  X
 } from 'lucide-react';
 
 const getNextGroupColor = (activeGroups: LinkGroup[]): string => {
@@ -61,9 +63,13 @@ function Dashboard() {
     signAndExecuteSwap,
     rpcUrl,
     setRpcUrl,
-    activeTrackingFraction,
-    setActiveTrackingFraction,
+    slippageBps,
+    setSlippageBps,
   } = useSolanaWallet();
+
+  const [rpcWarningDismissed, setRpcWarningDismissed] = useState<boolean>(() => {
+    return localStorage.getItem('roundtrip_rpc_warning_dismissed') === 'true';
+  });
 
   // Multi-group state
   const [groups, setGroups] = useState<LinkGroup[]>(() => {
@@ -168,6 +174,7 @@ function Dashboard() {
   const [activeTab, setActiveTab] = useState<'wallet' | 'prices' | 'history'>('wallet');
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null); // Null means Screen 1, otherwise active Screen 2
   const [linkingGroupId, setLinkingGroupId] = useState<string | null>(null); // Group currently in Direct Link Mode
+  const [showHiddenTokens, setShowHiddenTokens] = useState(false);
 
   // Group creation state
   const [newGroupName, setNewGroupName] = useState('');
@@ -514,6 +521,13 @@ function Dashboard() {
 
   const walletBalances = getWalletBalances();
   const totalWalletValue = walletBalances.reduce((sum, item) => sum + item.usdValue, 0);
+
+  const isVerifiedCoin = (mint: string) => {
+    if (COIN_METADATA[mint]) return true;
+    const meta = tokenMetadata[mint];
+    if (meta && meta.tags && meta.tags.includes('verified')) return true;
+    return false;
+  };
 
   // Group allocations mapping
   const getGroupStats = (g: LinkGroup) => {
@@ -915,22 +929,73 @@ function Dashboard() {
               )}
             </button>
             {showRpcSettings && (
-              <div className="absolute right-0 top-11 w-64 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl z-50 text-xs space-y-3">
-                <h4 className="font-bold text-white uppercase tracking-wider">Node RPC Config</h4>
-                <input
-                  type="text"
-                  value={rpcUrl}
-                  onChange={(e) => setRpcUrl(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 font-mono text-[10px] text-white focus:outline-none"
-                />
-                <p className="text-[9px] text-slate-500">
-                  Custom nodes bypass public Mainnet rate limits.
-                </p>
-                {rpcUrl === 'https://api.mainnet-beta.solana.com' && (
-                  <div className="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[9px] text-amber-400 leading-normal animate-in fade-in duration-200">
-                    <strong>Notice:</strong> Using public Solana RPC node. Live Jupiter quoting & confirmations may be throttled. Custom node is recommended for optimal speed.
+              <div className="absolute right-0 top-11 w-68 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl z-50 text-xs space-y-4">
+                <div className="space-y-1.5">
+                  <h4 className="font-bold text-white uppercase tracking-wider">Node RPC Config</h4>
+                  <input
+                    type="text"
+                    value={rpcUrl}
+                    onChange={(e) => setRpcUrl(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 font-mono text-[10px] text-white focus:outline-none focus:border-emerald-500"
+                  />
+                  <p className="text-[9px] text-slate-500 leading-normal">
+                    Paste a private RPC URL (e.g. from Helius free tier). Never share this URL publicly.
+                  </p>
+                  {rpcUrl === 'https://api.mainnet-beta.solana.com' && (
+                    <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[9px] text-amber-400 leading-normal animate-in fade-in duration-200">
+                      <strong>Notice:</strong> Using public Solana RPC node. Live Jupiter quoting & confirmations may be throttled. Custom node is recommended for optimal speed.
+                    </div>
+                  )}
+                </div>
+
+                <hr className="border-slate-850" />
+
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <h4 className="font-bold text-white uppercase tracking-wider">Slippage Tolerance</h4>
+                    <span className="text-xs font-mono font-extrabold text-emerald-400">{(slippageBps / 100).toFixed(1)}%</span>
                   </div>
-                )}
+                  <div className="grid grid-cols-4 gap-1">
+                    {[50, 100, 200].map((bps) => (
+                      <button
+                        key={bps}
+                        onClick={() => setSlippageBps(bps)}
+                        className={`py-1 text-[10px] font-extrabold rounded border cursor-pointer transition-all ${
+                          slippageBps === bps
+                            ? 'bg-emerald-500 border-emerald-500 text-slate-950'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {bps / 100}%
+                      </button>
+                    ))}
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.1"
+                      max="5"
+                      placeholder="Custom"
+                      value={![50, 100, 200].includes(slippageBps) ? (slippageBps / 100).toString() : ''}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val)) {
+                          const bps = Math.min(500, Math.max(5, Math.round(val * 100)));
+                          setSlippageBps(bps);
+                        }
+                      }}
+                      className={`py-1 px-1 text-center text-[10px] font-extrabold rounded border bg-slate-950 focus:outline-none ${
+                        ![50, 100, 200].includes(slippageBps)
+                          ? 'border-emerald-500 text-emerald-400'
+                          : 'border-slate-800 text-slate-400'
+                      }`}
+                    />
+                  </div>
+                  {slippageBps > 300 && (
+                    <div className="text-[9px] text-amber-400 leading-tight">
+                      ⚠️ Higher slippage risks worse fills & front-running.
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -962,6 +1027,28 @@ function Dashboard() {
       {/* Primary Layout Frame */}
       <main className="max-w-7xl mx-auto px-6 py-8 flex-grow w-full space-y-6">
         
+        {!rpcWarningDismissed && type !== 'demo' && rpcUrl === 'https://api.mainnet-beta.solana.com' && (
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 flex items-start gap-3 relative text-amber-400 animate-in fade-in duration-200">
+            <span className="text-base">⚠️</span>
+            <div className="flex-grow space-y-1 text-xs">
+              <h4 className="font-extrabold text-white">Using Public Solana RPC</h4>
+              <p className="text-slate-300 leading-relaxed">
+                You're on the public Solana RPC, which is rate-limited and may cause failed balance loads or swaps. Add a private RPC (Helius, Triton, QuickNode) in Settings for reliable trading.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setRpcWarningDismissed(true);
+                localStorage.setItem('roundtrip_rpc_warning_dismissed', 'true');
+              }}
+              className="text-slate-500 hover:text-slate-300 transition-colors p-1 rounded-lg cursor-pointer flex-shrink-0"
+              title="Dismiss warning"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {showDisclaimerBanner && (
           <Disclaimer showDismissButton onDismiss={() => setShowDisclaimerBanner(false)} />
         )}
@@ -1035,13 +1122,6 @@ function Dashboard() {
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setShowConvertModal(true)}
-              className="comic-btn bg-emerald-500 hover:bg-emerald-450 text-slate-950 text-xs font-bold px-4 py-2 rounded-lg transition-all shadow-md shadow-emerald-500/10 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              Convert & Link
-            </button>
           </div>
         </div>
 
@@ -1066,178 +1146,374 @@ function Dashboard() {
             groupSnapshots={snapshots.filter((s) => s && s.groupId === activeGroup.id)}
             loadingPrices={loadingPrices}
             onMoveToken={handleMoveToken}
+            onOpenAddBasket={() => setShowConvertModal(true)}
           />
         ) : (
           /* SCREEN 1: WALLET HOME VIEW */
           <>
-            {activeTab === 'wallet' && (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-200">
-                
-                {/* Left Legend / Group List Sidebar */}
-                <div className="space-y-6">
-                  <div className="bg-slate-900 border border-slate-850 rounded-2xl p-6 shadow-xl space-y-4">
-                    <div className="border-b border-slate-800 pb-3 flex justify-between items-center">
-                      <h3 className="text-sm font-extrabold text-white flex items-center gap-1.5">
-                        <Layers className="w-4 h-4 text-emerald-400" />
-                        Link-Groups Legend
-                      </h3>
+            {activeTab === 'wallet' && (() => {
+              const mainCoins = walletBalances.filter(item => {
+                const isLinked = groups.some((g) => g.memberMints.includes(item.mint));
+                const isVerified = isVerifiedCoin(item.mint);
+                return isLinked || isVerified || item.usdValue >= 0.01;
+              });
+
+              const hiddenCoins = walletBalances.filter(item => {
+                const isLinked = groups.some((g) => g.memberMints.includes(item.mint));
+                const isVerified = isVerifiedCoin(item.mint);
+                const showInMainList = isLinked || isVerified || item.usdValue >= 0.01;
+                return !showInMainList && item.amount > 0;
+              });
+
+              const clusteredBlocks = groups.map(g => {
+                const coins = mainCoins.filter(item => g.memberMints.includes(item.mint));
+                return { group: g, coins };
+              }).filter(block => block.coins.length > 0);
+
+              const unlinkedMainCoins = mainCoins.filter(item => !groups.some(g => g.memberMints.includes(item.mint)));
+
+              const renderDenseRow = (item: TokenBalance) => {
+                const owningGroup = groups.find((g) => g.memberMints.includes(item.mint));
+                const isLinked = !!owningGroup;
+                const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
+
+                const handleRowClick = () => {
+                  if (linkingGroupId) {
+                    handleToggleCoinLinking(item.mint);
+                  } else if (owningGroup) {
+                    setSelectedGroupId(owningGroup.id);
+                  } else {
+                    setConvertSuccessMessage(`This asset is currently unlinked. Click a basket tile's "Link Coins" or use the asset action menu to add it to an equal-weight rebalancing basket.`);
+                    setTimeout(() => setConvertSuccessMessage(null), 4500);
+                  }
+                };
+
+                return (
+                  <div
+                    key={item.mint}
+                    onClick={handleRowClick}
+                    className={`py-2.5 px-4 rounded-xl border transition-all cursor-pointer flex justify-between items-center gap-3 relative ${
+                      linkingGroupId
+                        ? 'hover:border-emerald-500 bg-slate-950/40 border-slate-850'
+                        : isLinked
+                        ? `border-l-4 ${gColors?.borderL} bg-slate-950 border-slate-850 hover:bg-slate-900`
+                        : 'bg-slate-950/40 border-slate-850 hover:bg-slate-900'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-grow">
+                      <TokenLogo logoURI={tokenMetadata[item.mint]?.logoURI} symbol={item.symbol} size="sm" />
                       
-                      {!showCreateGroup && (
-                        <button
-                          onClick={() => setShowCreateGroup(true)}
-                          className="comic-btn text-[10px] bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded-lg font-bold cursor-pointer"
-                        >
-                          + New Group
-                        </button>
-                      )}
+                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                        <strong className="text-white font-extrabold text-xs">{item.symbol}</strong>
+                        
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} units
+                        </span>
+
+                        {owningGroup ? (
+                          <span
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenMenuMint(openMenuMint === item.mint ? null : item.mint);
+                            }}
+                            className={`text-[8px] uppercase font-extrabold tracking-widest px-1.5 py-0.5 rounded cursor-pointer hover:opacity-80 transition-colors ${gColors?.bg} ${gColors?.text}`}
+                          >
+                            {owningGroup.name}
+                          </span>
+                        ) : (
+                          <span
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenMenuMint(openMenuMint === item.mint ? null : item.mint);
+                            }}
+                            className="text-[8px] bg-slate-900 text-slate-500 font-extrabold px-1.5 py-0.5 rounded border border-slate-850 cursor-pointer hover:text-slate-300 transition-colors"
+                          >
+                            Unlinked
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    {/* Inline Group creation form */}
-                    {showCreateGroup && (
-                      <div className="bg-slate-950 p-4 border border-slate-850 rounded-xl space-y-3">
-                        <span className="text-[10px] font-bold text-slate-450 uppercase block">Name Your Link-Group:</span>
-                        <input
-                          type="text"
-                          value={newGroupName}
-                          onChange={(e) => setNewGroupName(e.target.value)}
-                          placeholder="e.g. AI & Tech"
-                          className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none"
-                        />
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleCreateGroup}
-                            className="comic-btn flex-grow bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-1.5 rounded text-[11px] cursor-pointer"
-                          >
-                            Create Group
-                          </button>
-                          <button
-                            onClick={() => setShowCreateGroup(false)}
-                            className="comic-btn bg-slate-850 text-slate-400 font-semibold px-3 py-1.5 rounded text-[11px] cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                        </div>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <div className="text-right flex items-center gap-2 font-mono">
+                        <span className="font-bold text-white text-xs">
+                          ${item.usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                        <span className={`text-[10px] ${item.change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {item.change24h >= 0 ? '+' : ''}{item.change24h.toFixed(1)}%
+                        </span>
                       </div>
-                    )}
 
-                    {/* Groups list */}
-                    <div className="space-y-3">
-                      {groups.length === 0 ? (
-                        <div className="text-center py-6 text-slate-500 text-xs">
-                          No active link-groups. Click "+ New Group" above to group your tokens.
-                        </div>
-                      ) : (
-                        groups.map((g) => {
-                          const gColors = getGroupColorClasses(g.color);
-                          const gStats = getGroupStats(g);
-
-                          return (
-                            <div 
-                              key={g.id}
-                              className={`p-4 bg-slate-950 border ${linkingGroupId === g.id ? 'border-emerald-500 ring-1 ring-emerald-500/35' : 'border-slate-850'} rounded-xl transition-all relative flex flex-col gap-3 group`}
-                            >
-                              <div className="flex justify-between items-start">
-                                <div 
-                                  onClick={() => setSelectedGroupId(g.id)}
-                                  className="space-y-1 cursor-pointer flex-grow"
-                                >
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-extrabold text-white text-xs hover:underline">{g.name}</span>
-                                    <span className={`w-2 h-2 rounded-full ${gColors.bgSolid}`} />
-                                  </div>
-                                  <span className="text-[10px] text-slate-500 font-medium block">
-                                    {g.memberMints.length} coins linked
-                                  </span>
-                                </div>
-
-                                <div className="text-right">
-                                  <div className="font-mono font-bold text-slate-200 text-xs">
-                                    ${gStats.totalUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                  </div>
-                                  <button
-                                    onClick={() => setSelectedGroupId(g.id)}
-                                    className={`text-[9px] ${gColors.text} font-bold hover:underline`}
-                                  >
-                                    View details →
-                                  </button>
-                                  {g.memberMints.length === 0 && (
+                      {/* Action Menu Trigger & Dropdown */}
+                      {!linkingGroupId && (
+                        <div className="relative z-10">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenMenuMint(openMenuMint === item.mint ? null : item.mint);
+                            }}
+                            className="p-1 text-slate-400 hover:text-white hover:bg-slate-850 rounded-lg transition-colors cursor-pointer"
+                            title="Asset actions"
+                          >
+                            <MoreVertical className="w-3.5 h-3.5" />
+                          </button>
+                          {openMenuMint === item.mint && (
+                            <>
+                              {/* Click-away backdrop */}
+                              <div
+                                className="fixed inset-0 z-40 cursor-default"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenMenuMint(null);
+                                }}
+                              />
+                              <div
+                                className="absolute right-0 mt-1 w-48 bg-slate-900 border border-slate-850 rounded-lg shadow-2xl z-50 py-1 text-left animate-in fade-in duration-100"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {isLinked ? (
+                                  <>
                                     <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setGroupToDelete(g);
+                                      onClick={() => {
+                                        setSelectedGroupId(owningGroup.id);
+                                        setOpenMenuMint(null);
                                       }}
-                                      className="text-[9px] text-rose-400 font-bold hover:underline block mt-1 cursor-pointer"
+                                      className="w-full text-left px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800 font-medium cursor-pointer"
                                     >
-                                      Delete Empty Group
+                                      👁️ View Group
                                     </button>
-                                  )}
-                                </div>
-                              </div>
 
-                              {/* Action tools */}
-                              <div className="flex justify-between items-center border-t border-slate-900 pt-3">
-                                {gStats.isRebalanceAdvisable ? (
-                                  <span className="text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-md font-bold">
-                                    ⚠️ Rebalance advisable
-                                  </span>
+                                    <button
+                                      onClick={() => {
+                                        setGroups((prev) =>
+                                          prev.map((g) =>
+                                            g.id === owningGroup.id
+                                              ? { ...g, memberMints: g.memberMints.filter((m) => m !== item.mint) }
+                                              : g
+                                          )
+                                        );
+                                        setOpenMenuMint(null);
+                                      }}
+                                      className="w-full text-left px-3 py-1.5 text-xs text-rose-400 hover:bg-slate-800 font-medium cursor-pointer border-b border-slate-850"
+                                    >
+                                      ✕ Unlink from Group
+                                    </button>
+
+                                    <div className="px-3 py-1 text-[9px] text-slate-500 font-bold uppercase tracking-wider">
+                                      Move to Group
+                                    </div>
+                                    {groups.filter((g) => g.id !== owningGroup.id).length === 0 ? (
+                                      <div className="px-3 py-1 text-[10px] text-slate-500 italic">No other groups</div>
+                                    ) : (
+                                      groups
+                                        .filter((g) => g.id !== owningGroup.id)
+                                        .map((g) => (
+                                          <button
+                                            key={g.id}
+                                            onClick={() => {
+                                              handleMoveToken(item.mint, owningGroup, g);
+                                              setOpenMenuMint(null);
+                                            }}
+                                            className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 truncate flex items-center gap-1.5 cursor-pointer"
+                                          >
+                                            <span className={`w-1.5 h-1.5 rounded-full ${getGroupColorClasses(g.color).bgSolid}`} />
+                                            {g.name}
+                                          </button>
+                                        ))
+                                    )}
+                                  </>
                                 ) : (
-                                  <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-md font-bold">
-                                    ✓ Balanced
-                                  </span>
+                                  <>
+                                    <div className="px-3 py-1 text-[9px] text-slate-500 font-bold uppercase tracking-wider">
+                                      Add to Group
+                                    </div>
+                                    {groups.length === 0 ? (
+                                      <div className="px-3 py-1 text-[10px] text-slate-500 italic">No groups created yet</div>
+                                    ) : (
+                                      groups.map((g) => (
+                                        <button
+                                          key={g.id}
+                                          onClick={() => {
+                                            setGroups((prev) =>
+                                              prev.map((currentG) =>
+                                                currentG.id === g.id
+                                                  ? { ...currentG, memberMints: [...currentG.memberMints, item.mint] }
+                                                  : currentG
+                                              )
+                                            );
+                                            setOpenMenuMint(null);
+                                          }}
+                                          className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 truncate flex items-center gap-1.5 cursor-pointer"
+                                        >
+                                          <span className={`w-1.5 h-1.5 rounded-full ${getGroupColorClasses(g.color).bgSolid}`} />
+                                          {g.name}
+                                        </button>
+                                      ))
+                                    )}
+                                  </>
                                 )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              };
 
-                                <button
-                                  onClick={() => {
-                                    if (linkingGroupId === g.id) {
-                                      setLinkingGroupId(null);
-                                    } else {
-                                      setLinkingGroupId(g.id);
-                                    }
-                                  }}
-                                  className="text-[10px] bg-slate-900 hover:bg-slate-850 text-slate-300 font-bold px-2.5 py-1 rounded-md border border-slate-800 cursor-pointer"
-                                >
-                                  {linkingGroupId === g.id ? 'Done Linking' : '🔗 Link Coins'}
-                                </button>
+              return (
+                <div className="space-y-6 animate-in fade-in duration-200">
+                  {/* Horizontal Strip / Grid of Basket Tiles + Create/Presets Tile */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
+                    {groups.map((g) => {
+                      const gColors = getGroupColorClasses(g.color);
+                      const gStats = getGroupStats(g);
+                      const memberSymbols = g.memberMints.map(mint => tokenMetadata[mint]?.symbol || mint.substring(0, 4).toUpperCase());
+
+                      return (
+                        <div 
+                          key={g.id}
+                          onClick={() => setSelectedGroupId(g.id)}
+                          className={`p-4 bg-slate-900 border border-slate-850 hover:border-slate-700 hover:bg-slate-850/60 rounded-2xl transition-all cursor-pointer flex flex-col justify-between gap-3 shadow-xl group`}
+                        >
+                          <div className="flex justify-between items-start gap-2">
+                            <div className="space-y-0.5 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-extrabold text-white text-xs hover:underline truncate max-w-[120px]">{g.name}</span>
+                                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${gColors.bgSolid}`} />
+                              </div>
+                              <div className="font-mono font-black text-slate-200 text-base">
+                                ${gStats.totalUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </div>
                             </div>
-                          );
-                        })
+
+                            {gStats.isRebalanceAdvisable ? (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedGroupId(g.id);
+                                }}
+                                className="text-[9px] bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 px-2 py-1 rounded-lg font-bold animate-pulse flex items-center gap-1 cursor-pointer flex-shrink-0"
+                                title="Rebalance recommended"
+                              >
+                                ⚠ Rebalance advised
+                              </button>
+                            ) : (
+                              <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded-lg font-bold flex items-center gap-1 flex-shrink-0">
+                                ✓ Balanced
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap gap-1 items-center">
+                              {memberSymbols.slice(0, 4).map((symbol, idx) => (
+                                <span key={idx} className="text-[8px] bg-slate-950 text-slate-400 border border-slate-800 px-1.5 py-0.5 rounded font-mono">
+                                  {symbol}
+                                </span>
+                              ))}
+                              {memberSymbols.length > 4 && (
+                                <span className="text-[8px] text-slate-500 font-bold pl-0.5">
+                                  +{memberSymbols.length - 4}
+                                </span>
+                              )}
+                              <span className="text-[9px] text-slate-500 font-medium ml-auto">
+                                {g.memberMints.length} coin{g.memberMints.length !== 1 ? 's' : ''}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Quick link button inside if user wants */}
+                          <div className="flex justify-between items-center border-t border-slate-850/60 pt-2 text-[10px]">
+                            <span className={`${gColors.text} font-bold hover:underline`}>
+                              View details →
+                            </span>
+                            {g.memberMints.length === 0 && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setGroupToDelete(g);
+                                }}
+                                className="text-rose-400 font-bold hover:underline cursor-pointer"
+                              >
+                                Delete Empty
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {/* CREATE & PRESETS TILE */}
+                    <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex flex-col justify-between gap-3 shadow-xl">
+                      <div className="space-y-1">
+                        <h4 className="text-xs font-extrabold text-slate-350 uppercase tracking-wider flex items-center gap-1.5">
+                          <Plus className="w-4 h-4 text-emerald-400" />
+                          Create & Presets
+                        </h4>
+                        <p className="text-[10px] text-slate-450 leading-tight">
+                          Build a custom basket or deploy a pre-configured investment strategy.
+                        </p>
+                      </div>
+
+                      {showCreateGroup ? (
+                        <div className="space-y-2">
+                          <input
+                            type="text"
+                            value={newGroupName}
+                            onChange={(e) => setNewGroupName(e.target.value)}
+                            placeholder="Group Name (e.g. Blue Chips)"
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none"
+                          />
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={handleCreateGroup}
+                              className="flex-grow bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-1.5 rounded-lg text-[10px] transition-all cursor-pointer"
+                            >
+                              Create
+                            </button>
+                            <button
+                              onClick={() => setShowCreateGroup(false)}
+                              className="bg-slate-800 hover:bg-slate-750 text-slate-300 font-bold px-2.5 py-1.5 rounded-lg text-[10px] transition-all cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <button
+                            onClick={() => setShowCreateGroup(true)}
+                            className="w-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all flex items-center justify-center gap-1.5"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            New Group
+                          </button>
+                          <div className="space-y-1">
+                            <span className="text-[8px] font-semibold text-slate-550 uppercase tracking-wider block">Spawn Presets:</span>
+                            <div className="flex flex-wrap gap-1">
+                              {PRESETS.map((p) => (
+                                <button
+                                  key={p.name}
+                                  onClick={() => setSelectedPreset(p)}
+                                  className="text-[9px] bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-850 px-2 py-0.5 rounded font-extrabold cursor-pointer transition-colors"
+                                  title={`${p.riskLabel} Risk`}
+                                >
+                                  {p.name.split(' ')[0]}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>
 
-                  {/* Preset Group Spawn cards */}
-                  <div className="bg-slate-900 border border-slate-850 rounded-2xl p-6 shadow-xl space-y-4">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                      <Sparkles className="w-4.5 h-4.5 text-emerald-400" />
-                      Add Presets as New Groups
-                    </h3>
-                    
-                    <div className="grid grid-cols-1 gap-2.5">
-                      {PRESETS.map((p) => (
-                        <button
-                          key={p.name}
-                          onClick={() => setSelectedPreset(p)}
-                          className="w-full p-3 bg-slate-950 hover:bg-slate-850 border border-slate-850 hover:border-slate-800 rounded-xl flex items-center justify-between text-left transition-all cursor-pointer"
-                        >
-                          <div className="space-y-0.5">
-                            <span className="font-extrabold text-white text-xs">{p.name}</span>
-                            <span className="text-[10px] text-slate-500 block leading-tight">{p.riskLabel} Risk</span>
-                          </div>
-                          <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right Wallet Grid (2 Cols) */}
-                <div className="lg:col-span-2 space-y-4">
-                  
                   {/* Direct Link mode notification banner */}
                   {linkingGroupId && (() => {
                     const groupToLink = groups.find((g) => g.id === linkingGroupId)!;
-                    const gColors = getGroupColorClasses(groupToLink.color);
+                    if (!groupToLink) return null;
                     return (
                       <div className={`p-4 bg-emerald-500/10 border border-emerald-500/35 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 text-xs text-slate-300`}>
                         <div className="flex items-center gap-2 flex-wrap">
@@ -1256,200 +1532,89 @@ function Dashboard() {
                     );
                   })()}
 
-                  <div className="bg-slate-900 border border-slate-850 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-                    <h3 className="text-md font-bold text-white mb-4">On-Chain Wallet Inventory</h3>
-                    
-                    <div className="space-y-3">
-                      {walletBalances.map((item) => {
-                        const owningGroup = groups.find((g) => g.memberMints.includes(item.mint));
-                        const isLinked = !!owningGroup;
-                        const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
+                  {/* Single Full-Width Inventory List Container */}
+                  <div className="bg-slate-900 border border-slate-850 rounded-2xl p-6 shadow-xl space-y-4">
+                    <div className="flex justify-between items-center mb-2">
+                      <h3 className="text-md font-bold text-white">On-Chain Wallet Inventory</h3>
+                      <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+                        {walletBalances.length} active assets
+                      </span>
+                    </div>
 
-                        const handleRowClick = () => {
-                          if (linkingGroupId) {
-                            handleToggleCoinLinking(item.mint);
-                          } else if (owningGroup) {
-                            setSelectedGroupId(owningGroup.id);
-                          } else {
-                            setConvertSuccessMessage(`This asset is currently unlinked. Click "Link Coins" on a group in the sidebar to add it to an equal-weight rebalancing basket.`);
-                            setTimeout(() => setConvertSuccessMessage(null), 4500);
-                          }
-                        };
-
+                    {/* MAIN TOKENS LIST */}
+                    <div className="space-y-4">
+                      {/* Clustered Linked Tokens per Group */}
+                      {clusteredBlocks.map(({ group, coins }) => {
+                        const gColors = getGroupColorClasses(group.color);
                         return (
-                          <div
-                            key={item.mint}
-                            onClick={handleRowClick}
-                            className={`p-4 rounded-xl border transition-all cursor-pointer flex justify-between items-center gap-3 relative ${
-                              linkingGroupId 
-                                ? 'hover:border-emerald-500' 
-                                : isLinked 
-                                ? `border-l-4 ${gColors?.borderL} bg-slate-950 border-slate-800` 
-                                : 'bg-slate-950/60 border-slate-850 opacity-60 hover:opacity-100'
-                            }`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  <strong className="text-white font-extrabold text-sm">{item.symbol}</strong>
-                                  
-                                  {owningGroup ? (
-                                    <span 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setOpenMenuMint(openMenuMint === item.mint ? null : item.mint);
-                                      }}
-                                      className={`text-[9px] uppercase font-extrabold tracking-widest px-2 py-0.5 rounded cursor-pointer hover:bg-slate-800 transition-colors ${gColors?.bg} ${gColors?.text}`}
-                                    >
-                                      {owningGroup.name}
-                                    </span>
-                                  ) : (
-                                    <span 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setOpenMenuMint(openMenuMint === item.mint ? null : item.mint);
-                                      }}
-                                      className="text-[9px] bg-slate-900 text-slate-500 font-extrabold px-2 py-0.5 rounded border border-slate-850 cursor-pointer hover:text-slate-300 transition-colors"
-                                    >
-                                      Unlinked
-                                    </span>
-                                  )}
-                                </div>
-                                {(item as any).loadingMetadata ? (
-                                  <span className="text-[10px] text-amber-500 animate-pulse font-mono">
-                                    metadata loading...
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] text-slate-500 font-mono">
-                                    {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })} units
-                                  </span>
-                                )}
-                              </div>
+                          <div key={group.id} className="space-y-2">
+                            {/* Thin colored band header for group */}
+                            <div className="flex items-center gap-2 border-b border-slate-800 pb-1.5">
+                              <span className={`w-1.5 h-3 rounded-sm ${gColors.bgSolid}`} />
+                              <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-350">
+                                {group.name} Basket
+                              </span>
+                              <span className="text-[9px] bg-slate-950 text-slate-500 font-mono px-1.5 py-0.5 rounded ml-auto">
+                                {coins.length} linked
+                              </span>
                             </div>
-
-                            <div className="flex items-center gap-4">
-                              <div className="text-right flex flex-col justify-start items-end gap-1 text-xs">
-                                <div className="font-mono font-black text-white">
-                                  ${item.usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                </div>
-                                <div className="text-[10px] text-slate-400 font-mono">
-                                  Price: {formatPrice(item.price)}{' '}
-                                  <span className={item.change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                                    ({item.change24h >= 0 ? '+' : ''}{item.change24h.toFixed(1)}%)
-                                  </span>
-                                </div>
-                              </div>
-
-                              {/* Action Menu Trigger & Dropdown */}
-                              {!linkingGroupId && (
-                                <div className="relative z-10">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setOpenMenuMint(openMenuMint === item.mint ? null : item.mint);
-                                    }}
-                                    className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-850 rounded-lg transition-colors cursor-pointer"
-                                    title="Asset actions"
-                                  >
-                                    <MoreVertical className="w-4 h-4" />
-                                  </button>
-                                  {openMenuMint === item.mint && (
-                                    <>
-                                      {/* Click-away backdrop */}
-                                      <div 
-                                        className="fixed inset-0 z-40 cursor-default" 
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setOpenMenuMint(null);
-                                        }} 
-                                      />
-                                      <div 
-                                        className="absolute right-0 mt-1 w-48 bg-slate-900 border border-slate-800 rounded-lg shadow-2xl z-50 py-1 text-left animate-in fade-in duration-100"
-                                        onClick={(e) => e.stopPropagation()}
-                                      >
-                                        {isLinked ? (
-                                          <>
-                                            <button
-                                              onClick={() => {
-                                                setSelectedGroupId(owningGroup.id);
-                                                setOpenMenuMint(null);
-                                              }}
-                                              className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 font-medium cursor-pointer"
-                                            >
-                                              👁️ View Group
-                                            </button>
-                                            
-                                            <button
-                                              onClick={() => {
-                                                setGroups((prev) => prev.map((g) => g.id === owningGroup.id ? { ...g, memberMints: g.memberMints.filter((m) => m !== item.mint) } : g));
-                                                setOpenMenuMint(null);
-                                              }}
-                                              className="w-full text-left px-3 py-2 text-xs text-rose-400 hover:bg-slate-800 font-medium cursor-pointer border-b border-slate-850"
-                                            >
-                                              ✕ Unlink from Group
-                                            </button>
-                                            
-                                            <div className="px-3 py-1.5 text-[9px] text-slate-500 font-bold uppercase tracking-wider">
-                                              Move to Group
-                                            </div>
-                                            {groups.filter(g => g.id !== owningGroup.id).length === 0 ? (
-                                              <div className="px-3 py-1 text-[10px] text-slate-500 italic">No other groups</div>
-                                            ) : (
-                                              groups.filter(g => g.id !== owningGroup.id).map(g => (
-                                                <button
-                                                  key={g.id}
-                                                  onClick={() => {
-                                                    handleMoveToken(item.mint, owningGroup, g);
-                                                    setOpenMenuMint(null);
-                                                  }}
-                                                  className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 truncate flex items-center gap-1.5 cursor-pointer"
-                                                >
-                                                  <span className={`w-1.5 h-1.5 rounded-full ${getGroupColorClasses(g.color).bgSolid}`} />
-                                                  {g.name}
-                                                </button>
-                                              ))
-                                            )}
-                                          </>
-                                        ) : (
-                                          <>
-                                            <div className="px-3 py-1.5 text-[9px] text-slate-500 font-bold uppercase tracking-wider">
-                                              Add to Group
-                                            </div>
-                                            {groups.length === 0 ? (
-                                              <div className="px-3 py-1 text-[10px] text-slate-500 italic">No groups created yet</div>
-                                            ) : (
-                                              groups.map(g => (
-                                                <button
-                                                  key={g.id}
-                                                  onClick={() => {
-                                                    setGroups((prev) => prev.map((currentG) => currentG.id === g.id ? { ...currentG, memberMints: [...currentG.memberMints, item.mint] } : currentG));
-                                                    setOpenMenuMint(null);
-                                                  }}
-                                                  className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 truncate flex items-center gap-1.5 cursor-pointer"
-                                                >
-                                                  <span className={`w-1.5 h-1.5 rounded-full ${getGroupColorClasses(g.color).bgSolid}`} />
-                                                  {g.name}
-                                                </button>
-                                              ))
-                                            )}
-                                          </>
-                                        )}
-                                      </div>
-                                    </>
-                                  )}
-                                </div>
-                              )}
+                            <div className="space-y-1.5">
+                              {coins.map(item => renderDenseRow(item))}
                             </div>
                           </div>
                         );
                       })}
+
+                      {/* Unlinked Coins Section */}
+                      {unlinkedMainCoins.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2 border-b border-slate-800 pb-1.5">
+                            <span className="w-1.5 h-3 rounded-sm bg-slate-700" />
+                            <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                              Unlinked Assets
+                            </span>
+                            <span className="text-[9px] bg-slate-950 text-slate-500 font-mono px-1.5 py-0.5 rounded ml-auto">
+                              {unlinkedMainCoins.length} assets
+                            </span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {unlinkedMainCoins.map(item => renderDenseRow(item))}
+                          </div>
+                        </div>
+                      )}
+
+                      {walletBalances.length === 0 && (
+                        <div className="text-center py-8 text-slate-500 text-sm">
+                          No assets found in your wallet. Use Demo Sandbox or connect a wallet.
+                        </div>
+                      )}
+
+                      {/* EXPANDER FOR HIDDEN LOW-VALUE TOKENS */}
+                      {hiddenCoins.length > 0 && (
+                        <div className="pt-2 border-t border-slate-850/60">
+                          <button
+                            onClick={() => setShowHiddenTokens(!showHiddenTokens)}
+                            className="w-full flex items-center justify-between py-2 text-slate-400 hover:text-white transition-colors cursor-pointer text-xs font-bold"
+                          >
+                            <span className="flex items-center gap-1.5">
+                              <Info className="w-3.5 h-3.5 text-slate-500" />
+                              {hiddenCoins.length} hidden low-value tokens
+                            </span>
+                            <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${showHiddenTokens ? 'rotate-180' : ''}`} />
+                          </button>
+
+                          {showHiddenTokens && (
+                            <div className="mt-2 space-y-1.5 border-l border-slate-850 pl-3 py-1 animate-in slide-in-from-top-2 duration-200">
+                              {hiddenCoins.map(item => renderDenseRow(item))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
-
                 </div>
-
-              </div>
-            )}
+              );
+            })()}
 
             {activeTab === 'prices' && (
               <PriceView
@@ -1536,7 +1701,7 @@ function Dashboard() {
               handleSaveSnapshot(grp.id, grp.name, grpBalances, grpTotalUsd, 'convert');
             }
 
-            setConvertSuccessMessage("Conversion executed successfully! Your link-group assets have been funded and tracked.");
+            setConvertSuccessMessage("Split swaps executed successfully! Your basket assets have been funded and tracked.");
             setTimeout(() => setConvertSuccessMessage(null), 4500);
           }}
         />

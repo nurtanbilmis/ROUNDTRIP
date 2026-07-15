@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import { Token, TokenBalance, RebalanceSwap, LinkGroup, getGroupColorClasses, formatPrice, COIN_LINE_COLORS } from '../types';
 import { useSolanaWallet } from './WalletProvider';
-import { fetchQuote } from '../jupiter';
+import { fetchQuote, fetchVerifiedTokens } from '../jupiter';
 import ScoreboardView from './ScoreboardView';
 import ConfirmModal from './ConfirmModal';
 import WithdrawModal from './WithdrawModal';
@@ -62,6 +62,7 @@ interface AllocationViewProps {
   groupSnapshots: any[];
   loadingPrices?: boolean;
   onMoveToken?: (mint: string, fromGroup: LinkGroup, toGroup: LinkGroup) => void;
+  onOpenAddBasket?: () => void;
 }
 
 export default function AllocationView({
@@ -78,14 +79,17 @@ export default function AllocationView({
   groupSnapshots,
   loadingPrices = false,
   onMoveToken,
+  onOpenAddBasket,
 }: AllocationViewProps) {
-  const { signAndExecuteSwap, publicKey, type, refreshBalances } = useSolanaWallet();
+  const { signAndExecuteSwap, publicKey, type, refreshBalances, slippageBps } = useSolanaWallet();
 
   const [loadingQuotes, setLoadingQuotes] = useState(false);
   const [rebalancing, setRebalancing] = useState(false);
   const [rebalanceStep, setRebalanceStep] = useState<number>(0);
   const [rebalanceStatus, setRebalanceStatus] = useState<Record<number, { success: boolean; txId?: string; error?: string }>>({});
   const [rebalanceInitiated, setRebalanceInitiated] = useState(false);
+  const [previewActive, setPreviewActive] = useState(false);
+  const [showExecuteAnywayConfirm, setShowExecuteAnywayConfirm] = useState(false);
   
   const [swapQuotes, setSwapQuotes] = useState<Record<number, { quote: any; error?: string }>>({});
   const [showTooltip, setShowTooltip] = useState(false);
@@ -95,12 +99,34 @@ export default function AllocationView({
   // Reset rebalance gate on group switch
   useEffect(() => {
     setRebalanceInitiated(false);
+    setPreviewActive(false);
   }, [group.id]);
 
   // States for membership editing and warnings
   const [confirmRemoveMint, setConfirmRemoveMint] = useState<string | null>(null);
   const [showInlineAddPicker, setShowInlineAddPicker] = useState(false);
+  const [verifiedTokens, setVerifiedTokens] = useState<Token[]>([]);
+  const [loadingVerifiedTokens, setLoadingVerifiedTokens] = useState(false);
+  const [addCoinSearchQuery, setAddCoinSearchQuery] = useState('');
   const [checkingLiquidity, setCheckingLiquidity] = useState<string | null>(null);
+
+  // Fetch verified tokens list when add picker is opened
+  useEffect(() => {
+    if (showInlineAddPicker && verifiedTokens.length === 0) {
+      const loadVerified = async () => {
+        setLoadingVerifiedTokens(true);
+        try {
+          const tokens = await fetchVerifiedTokens();
+          setVerifiedTokens(tokens);
+        } catch (err) {
+          console.error('Failed to load verified tokens:', err);
+        } finally {
+          setLoadingVerifiedTokens(false);
+        }
+      };
+      loadVerified();
+    }
+  }, [showInlineAddPicker, verifiedTokens.length]);
   const [pendingWarningToken, setPendingWarningToken] = useState<{ token: Token; liquidity: number } | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showUnlinkAllConfirm, setShowUnlinkAllConfirm] = useState(false);
@@ -136,8 +162,8 @@ export default function AllocationView({
     setConfirmRemoveMint(null);
   };
 
-  const handleAddCoinPreCheck = async (mint: string) => {
-    const meta = tokenMetadata[mint] || { address: mint, symbol: mint.substring(0, 4), name: 'Unknown', decimals: 9 };
+  const handleAddCoinPreCheck = async (token: Token) => {
+    const mint = token.address;
     const safeMints = [
       'So11111111111111111111111111111111111111112', // SOL
       'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
@@ -153,7 +179,7 @@ export default function AllocationView({
       const { fetchTokenLiquidity } = await import('../jupiter');
       const liq = await fetchTokenLiquidity(mint);
       if (liq < 50000) {
-        setPendingWarningToken({ token: meta, liquidity: liq });
+        setPendingWarningToken({ token, liquidity: liq });
       } else {
         handleAddCoinDirect(mint);
       }
@@ -249,7 +275,7 @@ export default function AllocationView({
   });
 
   // 2. Base units greedy matching rebalance swaps builder
-  const calculateRebalanceSwaps = (): RebalanceSwap[] => {
+  const calculateRebalanceSwaps = (bypassFloor: boolean = false): RebalanceSwap[] => {
     // Filter out unknown decimals
     const activeMembers = groupBalances.filter((b) => !(b as any).isDecimalsUnknown);
     if (activeMembers.length < 2 || totalUsdValue <= 0) return [];
@@ -289,46 +315,135 @@ export default function AllocationView({
     let sellIdx = 0;
     let buyIdx = 0;
 
+    const floor = bypassFloor ? 0.000001 : MIN_TRADE_FLOOR_USD;
+
     while (sellIdx < sells.length && buyIdx < buys.length) {
       const sell = sells[sellIdx];
       const buy = buys[buyIdx];
 
       const matchUsd = Math.min(sell.amountUsdToSell, buy.amountUsdToBuy);
 
-      if (matchUsd >= MIN_TRADE_FLOOR_USD) {
+      if (matchUsd >= floor) {
         const sellTokenInfo = calculatedTokens.find((b) => b.mint === sell.mint)!;
         const sellAmountHuman = matchUsd / sellTokenInfo.price;
         const sellAmountBase = Math.floor(sellAmountHuman * Math.pow(10, sell.decimals));
 
-        swapsList.push({
-          inputMint: sell.mint,
-          inputSymbol: sell.symbol,
-          inputDecimals: sell.decimals,
-          outputMint: buy.mint,
-          outputSymbol: buy.symbol,
-          outputDecimals: buy.decimals,
-          amount: sellAmountBase,
-          amountHuman: sellAmountHuman,
-          usdValue: matchUsd,
-        });
+        if (sellAmountBase > 0) {
+          swapsList.push({
+            inputMint: sell.mint,
+            inputSymbol: sell.symbol,
+            inputDecimals: sell.decimals,
+            outputMint: buy.mint,
+            outputSymbol: buy.symbol,
+            outputDecimals: buy.decimals,
+            amount: sellAmountBase,
+            amountHuman: sellAmountHuman,
+            usdValue: matchUsd,
+          });
+        }
       }
 
       sell.amountUsdToSell -= matchUsd;
       buy.amountUsdToBuy -= matchUsd;
 
-      if (sell.amountUsdToSell < MIN_TRADE_FLOOR_USD) sellIdx++;
-      if (buy.amountUsdToBuy < MIN_TRADE_FLOOR_USD) buyIdx++;
+      if (sell.amountUsdToSell < floor) sellIdx++;
+      if (buy.amountUsdToBuy < floor) buyIdx++;
     }
 
     return swapsList;
   };
 
-  const currentSwaps = calculateRebalanceSwaps();
+  const currentSwaps = calculateRebalanceSwaps(false);
+  const previewSwaps = calculateRebalanceSwaps(true);
+  const activeSwaps = previewActive ? previewSwaps : currentSwaps;
+  const previewRebalanceAvailable = groupBalances.filter(item => item.amountHuman > 0 && item.usdValue > 0).length >= 2;
+
+  // Find SOL price for network fee estimation
+  const solPrice = prices['So11111111111111111111111111111111111111112']?.price || 140;
+
+  let totalSlippageLossUsd = 0;
+  let totalNetworkFeeUsd = 0;
+
+  activeSwaps.forEach((swap, idx) => {
+    const quoteInfo = swapQuotes[idx];
+    if (quoteInfo?.quote) {
+      const outputCoinPrice = prices[swap.outputMint]?.price || 0;
+      const quotedOutput = parseInt(quoteInfo.quote.outAmount || '0') / Math.pow(10, swap.outputDecimals);
+      const slippageLoss = Math.max(0, swap.usdValue - (quotedOutput * outputCoinPrice));
+      totalSlippageLossUsd += slippageLoss;
+    } else {
+      // Estimate 0.5% slippage placeholder before quote loaded
+      totalSlippageLossUsd += swap.usdValue * 0.005;
+    }
+    totalNetworkFeeUsd += 0.00005 * solPrice;
+  });
+
+  const totalEstimatedCostUsd = totalSlippageLossUsd + totalNetworkFeeUsd;
+
+  const previewResultingBalances = groupBalances.map(coin => {
+    let netUnitChange = 0;
+    let netUsdChange = 0;
+
+    activeSwaps.forEach((swap, idx) => {
+      const quoteInfo = swapQuotes[idx];
+      const quotedOutput = quoteInfo?.quote 
+        ? (parseInt(quoteInfo.quote.outAmount || '0') / Math.pow(10, swap.outputDecimals))
+        : (swap.usdValue / coin.price); // fallback to ideal if quote not loaded yet
+
+      if (swap.inputMint === coin.mint) {
+        netUnitChange -= swap.amountHuman;
+        netUsdChange -= swap.usdValue;
+      }
+      if (swap.outputMint === coin.mint) {
+        netUnitChange += quotedOutput;
+        netUsdChange += (quotedOutput * coin.price);
+      }
+    });
+
+    const resultingAmountHuman = Math.max(0, coin.amountHuman + netUnitChange);
+    const resultingUsdValue = Math.max(0, coin.usdValue + netUsdChange);
+
+    return {
+      ...coin,
+      netUnitChange,
+      resultingAmountHuman,
+      resultingUsdValue,
+    };
+  });
+
+  const totalResultingUsdValue = previewResultingBalances.reduce((sum, item) => sum + item.resultingUsdValue, 0);
+
+  const resultingBalancesWithWeights = previewResultingBalances.map(item => {
+    const resultingWeight = totalResultingUsdValue > 0 ? (item.resultingUsdValue / totalResultingUsdValue) * 100 : 0;
+    return {
+      ...item,
+      resultingWeight,
+    };
+  });
+
+  const getCostVerdict = (drift: number, cost: number) => {
+    const costStr = cost < 0.01 ? `<$0.01` : `$${cost.toFixed(2)}`;
+    const driftStr = `${drift.toFixed(1)}%`;
+
+    if (drift < 1.0) {
+      return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - likely not worth it due to minimal variance.`;
+    } else if (drift < 5.0) {
+      if (cost > 0.50) {
+        return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - likely not worth it due to high transaction costs.`;
+      }
+      return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - roughly break-even, may be performed for precision.`;
+    } else {
+      if (cost > 2.00) {
+        return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - high fee impact, but recommended to restore target weights.`;
+      }
+      return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - highly efficient, recommended to restore target weights.`;
+    }
+  };
 
   // Load quotes from Jupiter for Rebalancing Swaps ON DEMAND (only when user initiates rebalance)
   useEffect(() => {
     async function loadQuotes() {
-      if (currentSwaps.length === 0) {
+      if (activeSwaps.length === 0) {
         setSwapQuotes({});
         return;
       }
@@ -336,18 +451,18 @@ export default function AllocationView({
       setLoadingQuotes(true);
       const quotesRecord: Record<number, { quote: any; error?: string }> = {};
 
-      for (let i = 0; i < currentSwaps.length; i++) {
-        const swap = currentSwaps[i];
+      for (let i = 0; i < activeSwaps.length; i++) {
+        const swap = activeSwaps[i];
         try {
-          if (swap.amount <= 0 || swap.usdValue < MIN_TRADE_FLOOR_USD) {
-            throw new Error('Trade size too small to route');
+          if (swap.amount <= 0) {
+            throw new Error('Trade size is zero');
           }
 
           const q = await fetchQuote({
             inputMint: swap.inputMint,
             outputMint: swap.outputMint,
             amount: swap.amount.toString(),
-            slippageBps: 50,
+            slippageBps,
           });
 
           const outAmt = q ? parseInt(q.outAmount || '0') : 0;
@@ -366,29 +481,35 @@ export default function AllocationView({
       setLoadingQuotes(false);
     }
 
-    if (rebalanceAvailable && rebalanceInitiated && !rebalancing && !isCashingOut) {
+    if (rebalanceAvailable && (rebalanceInitiated || previewActive) && !rebalancing && !isCashingOut) {
       loadQuotes();
     }
-  }, [rebalanceAvailable, rebalanceInitiated, rebalancing, group.id, isCashingOut]);
+  }, [rebalanceAvailable, rebalanceInitiated, previewActive, rebalancing, group.id, isCashingOut, activeSwaps.length]);
 
   // Execute sequential swaps for rebalancing
   const handleExecuteRebalance = async () => {
-    if (currentSwaps.length === 0) return;
+    if (activeSwaps.length === 0) return;
+    if (rebalancing) return;
 
     setRebalancing(true);
-    setRebalanceStatus({});
 
-    for (let i = 0; i < currentSwaps.length; i++) {
+    const localStatus = { ...rebalanceStatus };
+
+    for (let i = 0; i < activeSwaps.length; i++) {
+      if (localStatus[i]?.success) {
+        continue;
+      }
+
       setRebalanceStep(i + 1);
-      const swap = currentSwaps[i];
+      const swap = activeSwaps[i];
       const quoteInfo = swapQuotes[i];
 
       if (!quoteInfo || !quoteInfo.quote) {
-        setRebalanceStatus((prev) => ({
-          ...prev,
-          [i]: { success: false, error: quoteInfo?.error || 'Quote failed / Skipped' },
-        }));
-        continue;
+        const errStr = quoteInfo?.error || 'Quote failed / Skipped';
+        localStatus[i] = { success: false, error: errStr };
+        setRebalanceStatus({ ...localStatus });
+        setRebalancing(false);
+        return; // halt sequence
       }
 
       try {
@@ -401,29 +522,34 @@ export default function AllocationView({
           outputDecimals: swap.outputDecimals,
         });
 
-        setRebalanceStatus((prev) => ({
-          ...prev,
-          [i]: { success: true, txId },
-        }));
+        localStatus[i] = { success: true, txId };
+        setRebalanceStatus({ ...localStatus });
       } catch (err: any) {
         console.error(`Rebalance step ${i + 1} failed:`, err);
-        setRebalanceStatus((prev) => ({
-          ...prev,
-          [i]: { success: false, error: err?.message || 'Transaction rejected' },
-        }));
+        const errStr = err?.message || 'Transaction rejected';
+        localStatus[i] = { success: false, error: errStr };
+        setRebalanceStatus({ ...localStatus });
         setRebalancing(false);
         return; // halt sequence
       }
     }
 
-    await onRefreshPrices();
-    const freshBalances = await refreshBalances();
-    const freshGroupBalances = getGroupBalances(freshBalances);
-    const freshTotalUsdValue = freshGroupBalances.reduce((sum, item) => sum + item.usdValue, 0);
-
-    onSaveSnapshot(group.id, group.name, freshGroupBalances, freshTotalUsdValue, 'rebalance');
     setRebalancing(false);
-    setRebalanceInitiated(false);
+
+    // Verify if indeed EVERY step is a success
+    const finalAllSucceeded = activeSwaps.every((_, idx) => localStatus[idx]?.success);
+
+    if (finalAllSucceeded) {
+      await onRefreshPrices();
+      const freshBalances = await refreshBalances();
+      const freshGroupBalances = getGroupBalances(freshBalances);
+      const freshTotalUsdValue = freshGroupBalances.reduce((sum, item) => sum + item.usdValue, 0);
+
+      onSaveSnapshot(group.id, group.name, freshGroupBalances, freshTotalUsdValue, 'rebalance');
+      setRebalanceInitiated(false);
+      setPreviewActive(false);
+      setRebalanceStatus({}); // Clear status on full success
+    }
   };
 
   // Group Color styling mapping
@@ -526,6 +652,53 @@ export default function AllocationView({
           </div>
         </div>
       ))}
+
+      {/* Basket Actions Bar */}
+      <div className="bg-slate-900 border border-slate-850 p-5 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-xl">
+        <div className="space-y-1">
+          <h4 className="text-sm font-extrabold text-white uppercase tracking-wider flex items-center gap-1.5">
+            <Coins className={`w-4 h-4 ${groupColors.text}`} />
+            Basket Trade Center
+          </h4>
+          <p className="text-xs text-slate-400">
+            {group.memberMints.length === 0 
+              ? 'This group is empty. Link coins first to enable funding splits.'
+              : `Choose a funding coin to buy evenly into the ${group.memberMints.length} linked assets.`
+            }
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={onOpenAddBasket}
+            disabled={group.memberMints.length === 0}
+            className="comic-btn bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-black rounded-xl text-xs px-5 py-2.5 transition-all cursor-pointer flex items-center gap-1.5 shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
+            title={group.memberMints.length === 0 ? 'Link coins to the group first' : 'Buy evenly into this group'}
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add to Basket (Split)
+          </button>
+
+          <button
+            onClick={() => {
+              if (rebalanceAvailable && currentSwaps.length > 0) {
+                setRebalanceInitiated(true);
+              }
+            }}
+            disabled={!rebalanceAvailable || currentSwaps.length === 0}
+            className="comic-btn bg-slate-950 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 text-slate-300 font-black rounded-xl text-xs px-5 py-2.5 transition-all cursor-pointer flex items-center gap-1.5 shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
+            title={
+              !rebalanceAvailable
+                ? 'Link at least 2 coins with balance to enable rebalance'
+                : currentSwaps.length === 0
+                ? 'Already balanced — no trades needed.'
+                : 'Trade between members to restore equal weight'
+            }
+          >
+            <ArrowUpDown className="w-3.5 h-3.5" />
+            Rebalance
+          </button>
+        </div>
+      </div>
 
       {/* Group Statistics Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -718,6 +891,16 @@ export default function AllocationView({
                     </button>
                   </div>
 
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="Search coin symbol, name or mint address..."
+                      value={addCoinSearchQuery}
+                      onChange={(e) => setAddCoinSearchQuery(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all"
+                    />
+                  </div>
+
                   {/* Warning Dialog for Liquidity */}
                   {pendingWarningToken && (
                     <div className="p-3 bg-amber-950/40 border border-amber-900/40 rounded-lg space-y-2 text-xs">
@@ -751,82 +934,118 @@ export default function AllocationView({
                   )}
 
                   <div className="max-h-[220px] overflow-y-auto space-y-1 pr-1 divide-y divide-slate-900">
-                    {(() => {
-                      const walletTokenMints = Object.keys(allBalances).filter((m) => (allBalances[m] || 0) > 0);
-                      const popularMints = [
-                        'So11111111111111111111111111111111111111112', // SOL
-                        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-                        'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-                        'JUPyiwrYJFskUPiFG4gpvXvjTE76SreV8NToA8Y5YyJ', // JUP
-                        'DezXAZ8z7PnrFcPykJzn99s94ChKnmk699rCgHmzUM6y', // BONK
-                      ];
-                      const allCandidateMints = Array.from(new Set([...walletTokenMints, ...popularMints]))
-                        .filter((m) => !group.memberMints.includes(m));
+                    {loadingVerifiedTokens ? (
+                      <div className="flex flex-col items-center justify-center py-6 text-center text-xs text-slate-500 gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                        <span>Fetching Jupiter verified list...</span>
+                      </div>
+                    ) : (
+                      (() => {
+                        let listToUse = verifiedTokens.length > 0 ? verifiedTokens : Object.entries(tokenMetadata).map(([addr, t]) => ({
+                          address: addr,
+                          symbol: t.symbol,
+                          name: t.name || 'Unknown',
+                          decimals: t.decimals,
+                        }));
 
-                      if (allCandidateMints.length === 0) {
-                        return <div className="text-center py-4 text-xs text-slate-500">No other coins found in wallet.</div>;
-                      }
+                        // Exclude current group members
+                        listToUse = listToUse.filter((t) => !group.memberMints.includes(t.address));
 
-                      return allCandidateMints.map((mint) => {
-                        const meta = tokenMetadata[mint] || { address: mint, symbol: mint.substring(0, 4), name: 'Unknown', decimals: 9 };
-                        const otherGroup = groups.find((g) => g.memberMints.includes(mint) && g.id !== group.id);
-                        const balanceRaw = allBalances[mint] || 0;
-                        const balanceHuman = meta.decimals !== undefined ? balanceRaw / Math.pow(10, meta.decimals) : 0;
+                        // Apply search filter
+                        if (addCoinSearchQuery.trim()) {
+                          const q = addCoinSearchQuery.toLowerCase().trim();
+                          listToUse = listToUse.filter(
+                            (t) =>
+                              t.symbol.toLowerCase().includes(q) ||
+                              (t.name && t.name.toLowerCase().includes(q)) ||
+                              t.address.toLowerCase() === q
+                          );
+                        }
 
-                        return (
-                          <div key={mint} className="flex justify-between items-center py-2 text-xs first:pt-0">
-                            <div className="flex items-center gap-2">
-                              <div className="w-6 h-6 bg-slate-900 rounded-full flex items-center justify-center font-bold text-[10px] text-slate-450">
-                                {meta.symbol.substring(0, 2)}
+                        // Sort: wallet balances first, then alphabetically by symbol
+                        listToUse = [...listToUse].sort((a, b) => {
+                          const balA = allBalances[a.address] || 0;
+                          const balB = allBalances[b.address] || 0;
+                          if (balA > 0 && balB === 0) return -1;
+                          if (balB > 0 && balA === 0) return 1;
+                          return a.symbol.localeCompare(b.symbol);
+                        });
+
+                        // Slice for performance
+                        const displayedList = listToUse.slice(0, 50);
+
+                        if (displayedList.length === 0) {
+                          return <div className="text-center py-4 text-xs text-slate-500">No matching verified coins found.</div>;
+                        }
+
+                        return displayedList.map((token) => {
+                          const mint = token.address;
+                          const meta = tokenMetadata[mint] || token;
+                          const otherGroup = groups.find((g) => g.memberMints.includes(mint) && g.id !== group.id);
+                          const balanceRaw = allBalances[mint] || 0;
+                          const balanceHuman = meta.decimals !== undefined ? balanceRaw / Math.pow(10, meta.decimals) : 0;
+
+                          return (
+                            <div key={mint} className="flex justify-between items-center py-2 text-xs first:pt-0">
+                              <div className="flex items-center gap-2">
+                                <div className="w-6 h-6 bg-slate-900 rounded-full flex items-center justify-center font-bold text-[10px] text-slate-400">
+                                  {meta.symbol ? meta.symbol.substring(0, 2) : '??'}
+                                </div>
+                                <div>
+                                  <div className="font-extrabold text-white flex items-center gap-1.5">
+                                    <span>{meta.symbol}</span>
+                                    {balanceHuman > 0 && (
+                                      <span className="text-[9px] text-emerald-400 font-mono">
+                                        ({balanceHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} in wallet)
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-slate-500 max-w-[180px] truncate">{meta.name}</div>
+                                </div>
                               </div>
+
                               <div>
-                                <div className="font-extrabold text-white flex items-center gap-1.5">
-                                  <span>{meta.symbol}</span>
-                                  {balanceHuman > 0 && (
-                                    <span className="text-[9px] text-emerald-400 font-mono">
-                                      ({balanceHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} in wallet)
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-[10px] text-slate-500 max-w-[180px] truncate">{meta.name}</div>
+                                {otherGroup ? (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] text-slate-500 italic">in {otherGroup.name}</span>
+                                    <button
+                                      onClick={() => {
+                                        if (onMoveToken) {
+                                          onMoveToken(mint, otherGroup, group);
+                                          setShowInlineAddPicker(false);
+                                          setAddCoinSearchQuery('');
+                                        }
+                                      }}
+                                      className="bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all"
+                                    >
+                                      Move here
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => handleAddCoinPreCheck({
+                                      address: token.address,
+                                      symbol: token.symbol,
+                                      name: token.name,
+                                      decimals: token.decimals || 9
+                                    })}
+                                    disabled={checkingLiquidity !== null}
+                                    className="bg-emerald-500 hover:bg-emerald-450 text-slate-950 px-3 py-1 rounded-lg text-[10px] font-black cursor-pointer transition-all flex items-center gap-1"
+                                  >
+                                    {checkingLiquidity === mint ? (
+                                      <Loader2 className="w-3 h-3 animate-spin text-slate-950" />
+                                    ) : (
+                                      <Plus className="w-3 h-3" />
+                                    )}
+                                    Add
+                                  </button>
+                                )}
                               </div>
                             </div>
-
-                            <div>
-                              {otherGroup ? (
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] text-slate-500 italic">in {otherGroup.name}</span>
-                                  <button
-                                    onClick={() => {
-                                      if (onMoveToken) {
-                                        onMoveToken(mint, otherGroup, group);
-                                        setShowInlineAddPicker(false);
-                                      }
-                                    }}
-                                    className="bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded-lg text-[10px] font-extrabold cursor-pointer transition-all"
-                                  >
-                                    Move here
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  onClick={() => handleAddCoinPreCheck(mint)}
-                                  disabled={checkingLiquidity !== null}
-                                  className="bg-emerald-500 hover:bg-emerald-450 text-slate-950 px-3 py-1 rounded-lg text-[10px] font-black cursor-pointer transition-all flex items-center gap-1"
-                                >
-                                  {checkingLiquidity === mint ? (
-                                    <Loader2 className="w-3 h-3 animate-spin text-slate-950" />
-                                  ) : (
-                                    <Plus className="w-3 h-3" />
-                                  )}
-                                  Add
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      });
-                    })()}
+                          );
+                        });
+                      })()
+                    )}
                   </div>
                 </div>
               ) : (
@@ -842,35 +1061,76 @@ export default function AllocationView({
           </div>
 
           {/* Rebalance Advisory Trades Container */}
-          {rebalanceAvailable && currentSwaps.length > 0 && (
+          {rebalanceAvailable && (
             <div className={`bg-slate-900 border ${groupColors.border} rounded-2xl p-6 shadow-xl space-y-4`}>
-              {!rebalanceInitiated ? (
-                <div className="text-center py-6 space-y-4 animate-in fade-in duration-200">
-                  <div className="mx-auto w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400">
-                    <ArrowUpDown className="w-6 h-6" />
+              {(!rebalanceInitiated && !previewActive) ? (
+                // NORMAL CLOSED STATES
+                currentSwaps.length === 0 ? (
+                  <div className="text-center py-6 space-y-3 animate-in fade-in duration-200">
+                    <div className="mx-auto w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                      <Check className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-extrabold text-white">Basket Perfectly Balanced</h4>
+                      <p className="text-xs text-slate-400 max-w-md mx-auto">
+                        This group is within ±5% on every coin. Nothing to rebalance right now.
+                      </p>
+                    </div>
+                    {previewRebalanceAvailable && (
+                      <button
+                        onClick={() => setPreviewActive(true)}
+                        className="mt-2 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors underline cursor-pointer flex items-center gap-1 mx-auto"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        Preview Rebalance & Override
+                      </button>
+                    )}
                   </div>
-                  <div className="space-y-1">
-                    <h4 className="text-sm font-extrabold text-white">Rebalance Available ({currentSwaps.length} Actionable Trades)</h4>
-                    <p className="text-xs text-slate-400 max-w-md mx-auto">
-                      Dynamic price fluctuations have introduced weights drift. Click below to load live routing quotes from Jupiter.
-                    </p>
+                ) : (
+                  <div className="text-center py-6 space-y-4 animate-in fade-in duration-200">
+                    <div className="mx-auto w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                      <ArrowUpDown className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-extrabold text-white">Rebalance Available ({currentSwaps.length} Actionable Trades)</h4>
+                      <p className="text-xs text-slate-400 max-w-md mx-auto">
+                        Dynamic price fluctuations have introduced weights drift. Click below to load live routing quotes from Jupiter.
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-3 items-center">
+                      <button
+                        onClick={() => setRebalanceInitiated(true)}
+                        className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-extrabold rounded-xl text-xs transition-all cursor-pointer shadow-lg"
+                      >
+                        Verify Rebalance Routes & Quotes
+                      </button>
+                      {previewRebalanceAvailable && (
+                        <button
+                          onClick={() => setPreviewActive(true)}
+                          className="text-xs font-bold text-slate-400 hover:text-white transition-colors underline cursor-pointer flex items-center gap-1"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                          Preview Rebalance (under the hood)
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <button
-                    onClick={() => setRebalanceInitiated(true)}
-                    className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-extrabold rounded-xl text-xs transition-all cursor-pointer shadow-lg"
-                  >
-                    Verify Rebalance Routes & Quotes
-                  </button>
-                </div>
+                )
               ) : (
+                // OPEN ACTIVE PREVIEW / ROUTE VIEW
                 <>
                   <div className="border-b border-slate-800 pb-4 flex justify-between items-center animate-in fade-in duration-200">
                     <div>
                       <h4 className="text-md font-bold text-white flex items-center gap-2">
                         <ArrowUpDown className={`w-4 h-4 ${groupColors.text}`} />
-                        Matching Advisory Trade List ({currentSwaps.length} swaps)
+                        {previewActive ? 'Preview Rebalance Route Calculations' : `Matching Advisory Trade List (${activeSwaps.length} swaps)`}
                       </h4>
-                      <p className="text-xs text-slate-400">Direct wallet-to-wallet routes generated to restore exact equal-weights.</p>
+                      <p className="text-xs text-slate-400">
+                        {previewActive 
+                          ? 'Pure read-only preview bypassing minimum floors to show accurate weights corrections.'
+                          : 'Direct wallet-to-wallet routes generated to restore exact equal-weights.'
+                        }
+                      </p>
                     </div>
                     {loadingQuotes ? (
                       <span className="text-xs text-slate-500 flex items-center gap-1.5 animate-pulse">
@@ -882,14 +1142,23 @@ export default function AllocationView({
                     )}
                   </div>
 
+                  {/* Trades List */}
                   <div className="space-y-2">
-                    {currentSwaps.map((swap, idx) => {
+                    {activeSwaps.map((swap, idx) => {
                       const quoteInfo = swapQuotes[idx];
                       const isCrashCase = crashWarnings.some((w) => w.mint === swap.outputMint);
 
+                      // Calculate Ideal vs Quoted
+                      const outputCoinPrice = prices[swap.outputMint]?.price || 0;
+                      const idealOutput = outputCoinPrice > 0 ? (swap.usdValue / outputCoinPrice) : 0;
+                      const quotedOutput = quoteInfo?.quote 
+                        ? (parseInt(quoteInfo.quote.outAmount || '0') / Math.pow(10, swap.outputDecimals))
+                        : 0;
+                      const swapSlippageUsd = Math.max(0, swap.usdValue - (quotedOutput * outputCoinPrice));
+
                       return (
                         <div key={idx} className={`p-4 rounded-xl border ${isCrashCase ? 'bg-rose-950/20 border-rose-500/20' : 'bg-slate-950 border-slate-850'} flex flex-col sm:flex-row justify-between sm:items-center gap-3 text-xs`}>
-                          <div className="space-y-1">
+                          <div className="space-y-1.5 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-slate-500 font-bold uppercase tracking-wider">SELL</span>
                               <strong className="text-white font-black">
@@ -899,17 +1168,43 @@ export default function AllocationView({
                               <span className="text-slate-500 font-bold uppercase tracking-wider">BUY</span>
                               <strong className={`font-black ${isCrashCase ? 'text-rose-400' : 'text-emerald-400'}`}>
                                 {quoteInfo && quoteInfo.quote ? (
-                                  (parseInt(quoteInfo.quote.outAmount || '0') / Math.pow(10, swap.outputDecimals)).toLocaleString(undefined, { maximumFractionDigits: 6 })
-                                ) : '0'} {swap.outputSymbol}
+                                  quotedOutput.toLocaleString(undefined, { maximumFractionDigits: 6 })
+                                ) : (
+                                  `~${idealOutput.toLocaleString(undefined, { maximumFractionDigits: 6 })}`
+                                )} {swap.outputSymbol}
                               </strong>
                             </div>
+                            
+                            {/* Cost breakdown for this trade if quote available */}
+                            {quoteInfo && quoteInfo.quote && (
+                              <div className="text-[10px] text-slate-500 flex items-center gap-2">
+                                <span>Ideal: <strong className="text-slate-400">{idealOutput.toLocaleString(undefined, { maximumFractionDigits: 4 })} {swap.outputSymbol}</strong></span>
+                                <span className="text-slate-700">|</span>
+                                <span>Est. Slippage & Fees: <strong className="text-amber-400">${swapSlippageUsd.toFixed(3)}</strong></span>
+                              </div>
+                            )}
+
                             <div className="text-[10px] text-slate-500">
                               Match size: <strong className="text-slate-400">${swap.usdValue.toFixed(2)}</strong>
                             </div>
                           </div>
 
                           <div className="text-right">
-                            {quoteInfo?.error ? (
+                            {rebalanceStatus[idx] ? (
+                              rebalanceStatus[idx].success ? (
+                                <span className="text-xs text-emerald-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30">
+                                  <Check className="w-3.5 h-3.5 text-emerald-400" /> Swap Succeeded
+                                </span>
+                              ) : (
+                                <span className="text-xs text-rose-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/30 animate-pulse" title={rebalanceStatus[idx].error}>
+                                  <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> Swap Failed
+                                </span>
+                              )
+                            ) : rebalancing && rebalanceStep === idx + 1 ? (
+                              <span className="text-xs text-amber-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 animate-pulse">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" /> Signing Swap...
+                              </span>
+                            ) : quoteInfo?.error ? (
                               <span className="text-xs text-rose-400 font-bold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/5 border border-rose-500/10">
                                 <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> 
                                 {quoteInfo.error.includes('small') ? 'Too Small to Route' : 'Quote Failed'}
@@ -927,11 +1222,72 @@ export default function AllocationView({
                     })}
                   </div>
 
+                  {/* PREVIEW EXCLUSIVE MATH SECTION */}
+                  {previewActive && (
+                    <div className="bg-slate-950 border border-slate-850 rounded-xl p-4 space-y-4 animate-in fade-in duration-300">
+                      <h5 className="text-xs font-extrabold text-slate-300 uppercase tracking-wider flex items-center gap-1.5 border-b border-slate-850 pb-2">
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                        Rebalance Preview Summary
+                      </h5>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* Cost section */}
+                        <div className="bg-slate-900 border border-slate-850/50 p-3 rounded-lg space-y-1.5">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Total Estimated Cost</span>
+                          <div className="text-lg font-mono font-black text-rose-400">
+                            ${totalEstimatedCostUsd.toFixed(2)}
+                          </div>
+                          <p className="text-[10px] text-slate-400 leading-normal">
+                            Includes slippage/price-impact (${totalSlippageLossUsd.toFixed(2)}) + Sol network fees (${totalNetworkFeeUsd.toFixed(2)}).
+                          </p>
+                        </div>
+
+                        {/* Resulting Weights preview */}
+                        <div className="bg-slate-900 border border-slate-850/50 p-3 rounded-lg space-y-2">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Resulting Target Weighting</span>
+                          <div className="space-y-1 max-h-[120px] overflow-y-auto pr-1">
+                            {resultingBalancesWithWeights.map((coin) => (
+                              <div key={coin.mint} className="flex justify-between items-center text-[11px] font-mono">
+                                <span className="text-slate-400 flex items-center gap-1">
+                                  <strong>{coin.symbol}</strong>
+                                  <span className={coin.netUnitChange >= 0 ? 'text-emerald-400 text-[10px]' : 'text-rose-400 text-[10px]'}>
+                                    ({coin.netUnitChange >= 0 ? '+' : ''}{coin.netUnitChange.toLocaleString(undefined, { maximumFractionDigits: 4 })})
+                                  </span>
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-slate-500 text-[10px]">{coin.currentWeight.toFixed(1)}%</span>
+                                  <span className="text-slate-600">→</span>
+                                  <span className="text-white font-bold">{coin.resultingWeight.toFixed(1)}%</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Verdict Banner */}
+                      <div className="bg-slate-900/60 border border-slate-800 p-3 rounded-lg text-xs flex items-start gap-2">
+                        <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                        <p className="text-slate-300 font-medium leading-relaxed">
+                          {getCostVerdict(maxAbsoluteDrift, totalEstimatedCostUsd)}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Execution Block */}
                   <div className="bg-slate-950 rounded-xl border border-slate-850 p-4 space-y-4">
+                    {type !== 'demo' && !localStorage.getItem('roundtrip_has_real_swapped') && (
+                      <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg text-xs leading-relaxed animate-in fade-in duration-200">
+                        <strong>First live swap:</strong> Confirm your wallet prompt appears and the transaction confirms before continuing.
+                      </div>
+                    )}
                     <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 text-[11px] text-slate-400">
                       <p className="max-w-md">
-                        Execution requires signing {currentSwaps.length} consecutive swap transactions. No assets ever leave your own wallet.
+                        {previewActive 
+                          ? `Execution will execute ${activeSwaps.length} sequential swap transactions to force rebalance to equal weight.`
+                          : `Execution requires signing ${activeSwaps.length} consecutive swap transactions. No assets ever leave your own wallet.`
+                        }
                       </p>
                       {type === 'demo' && (
                         <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded-md border border-emerald-500/20 font-bold">
@@ -945,44 +1301,73 @@ export default function AllocationView({
                         <div className="flex items-center gap-2">
                           <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
                           <span className="text-xs text-slate-300 font-semibold">
-                            Executing Swap {rebalanceStep} of {currentSwaps.length}...
+                            Executing Swap {rebalanceStep} of {activeSwaps.length}...
                           </span>
                         </div>
                         <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden">
                           <div
                             className="h-full bg-emerald-500 transition-all duration-300"
-                            style={{ width: `${(rebalanceStep / currentSwaps.length) * 100}%` }}
+                            style={{ width: `${(rebalanceStep / activeSwaps.length) * 100}%` }}
                           />
                         </div>
                       </div>
                     )}
 
-                    <button
-                      onClick={handleExecuteRebalance}
-                      disabled={rebalancing || loadingQuotes || !publicKey}
-                      className={`w-full py-4 rounded-xl text-sm font-extrabold transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                        crashWarnings.length > 0
-                          ? 'bg-rose-600 hover:bg-rose-700 text-white'
-                          : `bg-emerald-500 hover:bg-emerald-400 text-slate-950`
-                      } disabled:opacity-50 shadow-md`}
-                    >
-                      {rebalancing ? (
-                        <>
-                          <Loader2 className="w-4.5 h-4.5 animate-spin text-slate-950" />
-                          Awaiting Signature...
-                        </>
-                      ) : crashWarnings.length > 0 ? (
-                        <>
-                          <AlertTriangle className="w-4.5 h-4.5" />
-                          Override Crash Warning & Rebalance
-                        </>
-                      ) : (
-                        <>
-                          <RefreshCw className="w-4.5 h-4.5" />
-                          Execute Equal-Weight Rebalance Now
-                        </>
-                      )}
-                    </button>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => {
+                          setRebalanceInitiated(false);
+                          setPreviewActive(false);
+                          setRebalanceStatus({});
+                        }}
+                        disabled={rebalancing}
+                        className="flex-grow py-4 bg-slate-900 border border-slate-850 hover:bg-slate-800 text-white font-semibold rounded-xl text-sm transition-all disabled:opacity-50 cursor-pointer text-center"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (previewActive && maxAbsoluteDrift < DRIFT_THRESHOLD) {
+                            setShowExecuteAnywayConfirm(true);
+                          } else {
+                            handleExecuteRebalance();
+                          }
+                        }}
+                        disabled={rebalancing || loadingQuotes || !publicKey || activeSwaps.length === 0}
+                        className={`flex-grow py-4 rounded-xl text-sm font-extrabold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                          crashWarnings.length > 0
+                            ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                            : `bg-emerald-500 hover:bg-emerald-400 text-slate-950`
+                        } disabled:opacity-50 shadow-md`}
+                      >
+                        {rebalancing ? (
+                          <>
+                            <Loader2 className="w-4.5 h-4.5 animate-spin text-slate-950" />
+                            Awaiting Signature...
+                          </>
+                        ) : Object.keys(rebalanceStatus).length > 0 && activeSwaps.some((_, idx) => rebalanceStatus[idx] && !rebalanceStatus[idx].success) ? (
+                          <>
+                            <RefreshCw className="w-4.5 h-4.5" />
+                            Retry Failed Steps
+                          </>
+                        ) : crashWarnings.length > 0 ? (
+                          <>
+                            <AlertTriangle className="w-4.5 h-4.5" />
+                            Override Crash Warning & Rebalance
+                          </>
+                        ) : previewActive ? (
+                          <>
+                            <Play className="w-4.5 h-4.5" />
+                            Execute Rebalance Anyway
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="w-4.5 h-4.5" />
+                            Execute Equal-Weight Rebalance Now
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </>
               )}
@@ -1047,6 +1432,19 @@ export default function AllocationView({
           onUpdateGroup({ ...group, memberMints: [] });
         }}
         onCancel={() => setShowUnlinkAllConfirm(false)}
+      />
+
+      <ConfirmModal
+        isOpen={showExecuteAnywayConfirm}
+        title="Execute rebalance anyway?"
+        message={`This rebalance costs ~$${totalEstimatedCostUsd.toFixed(2)} in fees/slippage to correct ~${maxAbsoluteDrift.toFixed(1)}% drift. Execute anyway?`}
+        confirmText="Yes, Execute Anyway"
+        cancelText="Abort"
+        onConfirm={() => {
+          setShowExecuteAnywayConfirm(false);
+          handleExecuteRebalance();
+        }}
+        onCancel={() => setShowExecuteAnywayConfirm(false)}
       />
 
     </div>

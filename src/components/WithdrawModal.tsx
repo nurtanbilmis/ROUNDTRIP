@@ -33,6 +33,7 @@ export default function WithdrawModal({
     publicKey,
     signAndExecuteSwap,
     refreshBalances,
+    slippageBps,
   } = useSolanaWallet();
 
   const [withdrawPercent, setWithdrawPercent] = useState<number>(25);
@@ -107,7 +108,7 @@ export default function WithdrawModal({
           inputMint: sell.token.mint,
           outputMint: USDC_MINT,
           amount: sell.sellAmountBase.toString(),
-          slippageBps: 80, // 0.8%
+          slippageBps, // Use dynamic slippage tolerance setting
         });
 
         const outAmountHuman = parseInt(quoteRes.outAmount || '0') / 1e6;
@@ -273,10 +274,10 @@ export default function WithdrawModal({
           <div>
             <h3 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
               <Coins className="w-5 h-5 text-emerald-400" />
-              Proportional Withdraw / Unlink
+              Proportional Cash Out / Unlink
             </h3>
             <p className="text-xs text-slate-400 mt-1">
-              Reduce your active managed portfolio of group <strong className="text-white">"{group.name}"</strong>.
+              Reduce or unlink your active tracked portfolio of group <strong className="text-white">"{group.name}"</strong>.
             </p>
           </div>
           <button
@@ -388,7 +389,7 @@ export default function WithdrawModal({
 
               {/* Coins Checklist */}
               <div className="space-y-3">
-                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">2. Select Coins to Withdraw</label>
+                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">2. Select Coins to Cash Out / Unlink</label>
                 <div className="bg-slate-950 rounded-xl border border-slate-850 p-4 space-y-2.5 max-h-[160px] overflow-y-auto">
                   {balancesWithPrice.map((item) => {
                     const isChecked = checkedMints.has(item.mint);
