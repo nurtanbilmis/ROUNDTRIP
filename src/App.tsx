@@ -906,7 +906,14 @@ function Dashboard() {
       
       {/* Top Header */}
       <header className="h-14 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between px-6 shrink-0 w-full sticky top-0 z-40">
-        <div className="flex items-center gap-3">
+        <div 
+          onClick={() => {
+            setSelectedGroupId(null);
+            setActiveTab('wallet');
+          }}
+          className="flex items-center gap-3 cursor-pointer hover:opacity-90 transition-opacity"
+          title="Go to Wallet Inventory"
+        >
           <div className="w-8 h-8 bg-emerald-500 rounded flex items-center justify-center">
             <div className="w-4 h-4 border-2 border-slate-900 rotate-45"></div>
           </div>
@@ -1621,6 +1628,17 @@ function Dashboard() {
                 balancesWithPrice={walletBalances}
                 loadingPrices={loadingPrices}
                 onRefreshPrices={refreshPrices}
+                groups={groups}
+                isVerifiedCoin={isVerifiedCoin}
+                prices={prices}
+                tokenMetadata={tokenMetadata}
+                onSelectGroup={(groupId) => {
+                  setSelectedGroupId(groupId);
+                }}
+                onNavigateToWallet={() => {
+                  setSelectedGroupId(null);
+                  setActiveTab('wallet');
+                }}
               />
             )}
 
