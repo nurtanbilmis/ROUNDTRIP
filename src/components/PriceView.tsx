@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, TrendingDown, RefreshCw, Flame, Loader2, Sparkles, AlertOctagon } from 'lucide-react';
+import { TrendingUp, TrendingDown, RefreshCw, Flame, Loader2, Sparkles, AlertOctagon, ChevronDown } from 'lucide-react';
 import { TokenBalance, LinkGroup, Token, getGroupColorClasses, formatPrice } from '../types';
 import TokenLogo from './TokenLogo';
 
@@ -30,6 +30,8 @@ export default function PriceView({
   landingMode = false,
   onConnect,
 }: PriceViewProps) {
+  const [showHiddenPrices, setShowHiddenPrices] = React.useState(false);
+
   // Top Index Coin definition
   const topIndexConfigs = [
     {
@@ -108,6 +110,9 @@ export default function PriceView({
       isCrashed,
     };
   });
+
+  const mainEnrichedCoins = enrichedCoins.filter(row => row.currentHoldingsUsd >= 0.01);
+  const hiddenEnrichedCoins = enrichedCoins.filter(row => row.currentHoldingsUsd < 0.01);
 
   const handleRowClick = (row: typeof enrichedCoins[0]) => {
     if (row.owningGroup) {
@@ -288,101 +293,212 @@ export default function PriceView({
           </div>
 
           {/* HELD ASSETS LIST */}
-          <div className="space-y-1.5">
-            <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider pl-1">Held Assets Portfolio</span>
-            {enrichedCoins.length === 0 ? (
+          <div className="space-y-3">
+            <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider pl-1 block">Held Assets Portfolio</span>
+            
+            {mainEnrichedCoins.length === 0 && hiddenEnrichedCoins.length === 0 ? (
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 text-center text-slate-500 text-xs">
                 No other qualifying held coins found. Connect a wallet with active Solana assets.
               </div>
             ) : (
-              <div className="bg-slate-900 border border-slate-850 rounded-xl overflow-hidden shadow-xl">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse min-w-[700px]">
-                    <thead>
-                      <tr className="border-b border-slate-850 bg-slate-950/60 text-[9px] font-extrabold uppercase text-slate-400 tracking-wider select-none">
-                        <th className="py-3 px-4">Coin</th>
-                        <th className="py-3 px-4 text-right">Units Held</th>
-                        <th className="py-3 px-4 text-right">Price</th>
-                        <th className="py-3 px-4 text-right">24h %</th>
-                        <th className="py-3 px-4 text-right">24h $ (holdings)</th>
-                        <th className="py-3 px-4 text-right">Holdings $</th>
-                        <th className="py-3 px-4 text-right">Basket</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-850/60">
-                      {enrichedCoins.map((row) => {
-                        const { item, price, change24h, currentHoldingsUsd, holdings24hChangeUsd, owningGroup, gColors, isCrashed } = row;
-                        return (
-                          <tr
-                            key={item.mint}
-                            onClick={() => handleRowClick(row)}
-                            className={`hover:bg-slate-850/30 transition-all cursor-pointer text-xs font-mono group border-b border-slate-850/30 ${
-                              isCrashed ? 'bg-rose-950/10 border-l-2 border-l-rose-500' : ''
-                            }`}
-                            title={`Click to view in ${owningGroup ? `basket: ${owningGroup.name}` : 'wallet inventory'}`}
-                          >
-                            {/* Coin column */}
-                            <td className="py-3 px-4 flex items-center gap-2 font-sans">
-                              <TokenLogo logoURI={item.logoURI} symbol={item.symbol} size="sm" />
-                              <div className="min-w-0 leading-none">
-                                <div className="flex items-center gap-1.5">
-                                  <strong className="text-white font-extrabold text-xs block">{item.symbol}</strong>
-                                  {isCrashed && (
-                                    <span className="bg-rose-500/20 text-rose-400 text-[8px] font-black uppercase px-1 rounded">
-                                      DROP
-                                    </span>
-                                  )}
-                                </div>
-                                {/* Mint title on hover */}
-                                <span className="text-[10px] text-slate-500 block truncate max-w-[120px]" title={item.mint}>
-                                  {item.mint.substring(0, 4)}...{item.mint.substring(item.mint.length - 4)}
-                                </span>
-                              </div>
-                            </td>
-
-                            {/* Units held */}
-                            <td className="py-3 px-4 text-right text-slate-300">
-                              {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })}
-                            </td>
-
-                            {/* Price */}
-                            <td className="py-3 px-4 text-right text-slate-200">
-                              {price > 0 ? formatPrice(price) : <span className="text-rose-500 text-[10px]">Offline</span>}
-                            </td>
-
-                            {/* 24h % */}
-                            <td className={`py-3 px-4 text-right font-bold ${change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {change24h >= 0 ? '+' : ''}{change24h.toFixed(1)}%
-                            </td>
-
-                            {/* 24h $ holdings */}
-                            <td className={`py-3 px-4 text-right font-bold ${holdings24hChangeUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {holdings24hChangeUsd >= 0 ? '+' : ''}${holdings24hChangeUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </td>
-
-                            {/* Your Holdings $ */}
-                            <td className="py-3 px-4 text-right text-white font-bold">
-                              ${currentHoldingsUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </td>
-
-                            {/* Basket column */}
-                            <td className="py-3 px-4 text-right">
-                              {owningGroup && gColors ? (
-                                <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-300">
-                                  <span className={`w-1.5 h-1.5 rounded-full ${gColors.bgSolid}`} />
-                                  {owningGroup.name}
-                                </span>
-                              ) : (
-                                <span className="text-[10px] text-slate-550 font-bold">Unlinked</span>
-                              )}
-                            </td>
+              <>
+                {mainEnrichedCoins.length === 0 ? (
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 text-center text-slate-500 text-xs">
+                    No major held coins found. Low-value or dust balances are hidden below.
+                  </div>
+                ) : (
+                  <div className="bg-slate-900 border border-slate-850 rounded-xl overflow-hidden shadow-xl">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse min-w-[700px]">
+                        <thead>
+                          <tr className="border-b border-slate-850 bg-slate-950/60 text-[9px] font-extrabold uppercase text-slate-400 tracking-wider select-none">
+                            <th className="py-3 px-4">Coin</th>
+                            <th className="py-3 px-4 text-right">Units Held</th>
+                            <th className="py-3 px-4 text-right">Price</th>
+                            <th className="py-3 px-4 text-right">24h %</th>
+                            <th className="py-3 px-4 text-right">24h $ (holdings)</th>
+                            <th className="py-3 px-4 text-right">Holdings $</th>
+                            <th className="py-3 px-4 text-right">Basket</th>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                        </thead>
+                        <tbody className="divide-y divide-slate-850/60">
+                          {mainEnrichedCoins.map((row) => {
+                            const { item, price, change24h, currentHoldingsUsd, holdings24hChangeUsd, owningGroup, gColors, isCrashed } = row;
+                            return (
+                              <tr
+                                key={item.mint}
+                                onClick={() => handleRowClick(row)}
+                                className={`hover:bg-slate-850/30 transition-all cursor-pointer text-xs font-mono group border-b border-slate-850/30 ${
+                                  isCrashed ? 'bg-rose-950/10 border-l-2 border-l-rose-500' : ''
+                                }`}
+                                title={`Click to view in ${owningGroup ? `basket: ${owningGroup.name}` : 'wallet inventory'}`}
+                              >
+                                {/* Coin column */}
+                                <td className="py-3 px-4 flex items-center gap-2 font-sans">
+                                  <TokenLogo logoURI={item.logoURI} symbol={item.symbol} size="sm" />
+                                  <div className="min-w-0 leading-none">
+                                    <div className="flex items-center gap-1.5">
+                                      <strong className="text-white font-extrabold text-xs block">{item.symbol}</strong>
+                                      {isCrashed && (
+                                        <span className="bg-rose-500/20 text-rose-400 text-[8px] font-black uppercase px-1 rounded">
+                                          DROP
+                                        </span>
+                                      )}
+                                    </div>
+                                    {/* Mint title on hover */}
+                                    <span className="text-[10px] text-slate-500 block truncate max-w-[120px]" title={item.mint}>
+                                      {item.mint.substring(0, 4)}...{item.mint.substring(item.mint.length - 4)}
+                                    </span>
+                                  </div>
+                                </td>
+
+                                {/* Units held */}
+                                <td className="py-3 px-4 text-right text-slate-300">
+                                  {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                                </td>
+
+                                {/* Price */}
+                                <td className="py-3 px-4 text-right text-slate-200">
+                                  {price > 0 ? formatPrice(price) : <span className="text-rose-500 text-[10px]">Offline</span>}
+                                </td>
+
+                                {/* 24h % */}
+                                <td className={`py-3 px-4 text-right font-bold ${change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {change24h >= 0 ? '+' : ''}{change24h.toFixed(1)}%
+                                </td>
+
+                                {/* 24h $ holdings */}
+                                <td className={`py-3 px-4 text-right font-bold ${holdings24hChangeUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {holdings24hChangeUsd >= 0 ? '+' : ''}${holdings24hChangeUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+
+                                {/* Your Holdings $ */}
+                                <td className="py-3 px-4 text-right text-white font-bold">
+                                  ${currentHoldingsUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+
+                                {/* Basket column */}
+                                <td className="py-3 px-4 text-right">
+                                  {owningGroup && gColors ? (
+                                    <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-300">
+                                      <span className={`w-1.5 h-1.5 rounded-full ${gColors.bgSolid}`} />
+                                      {owningGroup.name}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-550 font-bold">Unlinked</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* EXPANDER FOR HIDDEN LOW-VALUE TOKENS */}
+                {hiddenEnrichedCoins.length > 0 && (
+                  <div className="mt-3">
+                    <button
+                      onClick={() => setShowHiddenPrices(!showHiddenPrices)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-850 hover:bg-slate-850 text-[10px] text-slate-400 hover:text-white transition-all cursor-pointer select-none font-extrabold uppercase tracking-wider shadow"
+                    >
+                      <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showHiddenPrices ? 'rotate-180' : ''}`} />
+                      <span>{hiddenEnrichedCoins.length} hidden low-value tokens (${hiddenEnrichedCoins.reduce((acc, row) => acc + row.currentHoldingsUsd, 0).toFixed(2)})</span>
+                    </button>
+                    {showHiddenPrices && (
+                      <div className="bg-slate-900 border border-slate-850 rounded-xl overflow-hidden shadow-xl mt-2.5">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse min-w-[700px]">
+                            <thead>
+                              <tr className="border-b border-slate-850 bg-slate-950/60 text-[9px] font-extrabold uppercase text-slate-400 tracking-wider select-none">
+                                <th className="py-2.5 px-4">Coin</th>
+                                <th className="py-2.5 px-4 text-right">Units Held</th>
+                                <th className="py-2.5 px-4 text-right">Price</th>
+                                <th className="py-2.5 px-4 text-right">24h %</th>
+                                <th className="py-2.5 px-4 text-right">24h $ (holdings)</th>
+                                <th className="py-2.5 px-4 text-right">Holdings $</th>
+                                <th className="py-2.5 px-4 text-right">Basket</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-850/40">
+                              {hiddenEnrichedCoins.map((row) => {
+                                const { item, price, change24h, currentHoldingsUsd, holdings24hChangeUsd, owningGroup, gColors, isCrashed } = row;
+                                return (
+                                  <tr
+                                    key={item.mint}
+                                    onClick={() => handleRowClick(row)}
+                                    className={`hover:bg-slate-850/20 transition-all cursor-pointer text-xs font-mono group border-b border-slate-850/30 ${
+                                      isCrashed ? 'bg-rose-950/10 border-l-2 border-l-rose-500' : ''
+                                    }`}
+                                    title={`Click to view in ${owningGroup ? `basket: ${owningGroup.name}` : 'wallet inventory'}`}
+                                  >
+                                    {/* Coin column */}
+                                    <td className="py-2.5 px-4 flex items-center gap-2 font-sans">
+                                      <TokenLogo logoURI={item.logoURI} symbol={item.symbol} size="sm" />
+                                      <div className="min-w-0 leading-none">
+                                        <div className="flex items-center gap-1.5">
+                                          <strong className="text-white font-extrabold text-xs block">{item.symbol}</strong>
+                                          {isCrashed && (
+                                            <span className="bg-rose-500/20 text-rose-400 text-[8px] font-black uppercase px-1 rounded">
+                                              DROP
+                                            </span>
+                                          )}
+                                        </div>
+                                        <span className="text-[10px] text-slate-500 block truncate max-w-[120px]" title={item.mint}>
+                                          {item.mint.substring(0, 4)}...{item.mint.substring(item.mint.length - 4)}
+                                        </span>
+                                      </div>
+                                    </td>
+
+                                    {/* Units held */}
+                                    <td className="py-2.5 px-4 text-right text-slate-400">
+                                      {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                                    </td>
+
+                                    {/* Price */}
+                                    <td className="py-2.5 px-4 text-right text-slate-300">
+                                      {price > 0 ? formatPrice(price) : <span className="text-rose-500 text-[10px]">Offline</span>}
+                                    </td>
+
+                                    {/* 24h % */}
+                                    <td className={`py-2.5 px-4 text-right font-medium ${change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                      {change24h >= 0 ? '+' : ''}{change24h.toFixed(1)}%
+                                    </td>
+
+                                    {/* 24h $ holdings */}
+                                    <td className={`py-2.5 px-4 text-right font-medium ${holdings24hChangeUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                      {holdings24hChangeUsd >= 0 ? '+' : ''}${holdings24hChangeUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </td>
+
+                                    {/* Your Holdings $ */}
+                                    <td className="py-2.5 px-4 text-right text-slate-300 font-medium">
+                                      ${currentHoldingsUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                                    </td>
+
+                                    {/* Basket column */}
+                                    <td className="py-2.5 px-4 text-right">
+                                      {owningGroup && gColors ? (
+                                        <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-slate-400">
+                                          <span className={`w-1.5 h-1.5 rounded-full ${gColors.bgSolid}`} />
+                                          {owningGroup.name}
+                                        </span>
+                                      ) : (
+                                        <span className="text-[10px] text-slate-600 font-medium">Unlinked</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </>
