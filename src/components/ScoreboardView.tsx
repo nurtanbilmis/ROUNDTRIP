@@ -51,6 +51,75 @@ export function getCoinBaselineSnapshot(snapshotsForGroup: BalanceSnapshot[], mi
   return snapshotsForGroup[baselineIdx] || null;
 }
 
+export interface CoinGrowthStats {
+  unitsNow: number;
+  baselineUnits: number;
+  netDeposited: number;
+  strategyDeltaUnits: number;
+  strategyDeltaPct: number;
+}
+
+export function getCoinStrategyGrowth(
+  sortedSnapshots: BalanceSnapshot[],
+  mint: string,
+  currentUnits?: number
+): CoinGrowthStats {
+  const baseline = getCoinBaselineSnapshot(sortedSnapshots, mint);
+  if (!baseline) {
+    const uNow = currentUnits ?? 0;
+    return {
+      unitsNow: uNow,
+      baselineUnits: uNow,
+      netDeposited: 0,
+      strategyDeltaUnits: 0,
+      strategyDeltaPct: 0,
+    };
+  }
+
+  const baseBal = baseline.balances.find((b) => b && b.mint === mint);
+  const baselineUnits = baseBal ? baseBal.amountHuman : 0;
+
+  const baselineIdx = sortedSnapshots.findIndex((s) => s.id === baseline.id);
+  let netDeposited = 0;
+
+  if (baselineIdx !== -1) {
+    for (let i = baselineIdx + 1; i < sortedSnapshots.length; i++) {
+      const snap = sortedSnapshots[i];
+      if (snap.eventType === 'convert' || snap.eventType === 'cashout') {
+        const prevSnap = sortedSnapshots[i - 1];
+        const prevBal = prevSnap ? prevSnap.balances.find((b) => b && b.mint === mint) : undefined;
+        const curBal = snap.balances.find((b) => b && b.mint === mint);
+
+        const unitsPrev = prevBal ? prevBal.amountHuman : 0;
+        const unitsCur = curBal ? curBal.amountHuman : 0;
+
+        netDeposited += (unitsCur - unitsPrev);
+      }
+    }
+  }
+
+  let unitsNow = 0;
+  if (currentUnits !== undefined) {
+    unitsNow = currentUnits;
+  } else if (sortedSnapshots.length > 0) {
+    const latestSnap = sortedSnapshots[sortedSnapshots.length - 1];
+    const latestBal = latestSnap.balances.find((b) => b && b.mint === mint);
+    unitsNow = latestBal ? latestBal.amountHuman : 0;
+  }
+
+  const strategyDeltaUnits = unitsNow - baselineUnits - netDeposited;
+  const denom = baselineUnits + netDeposited;
+  const strategyDeltaPct = denom > 0 ? (strategyDeltaUnits / denom) * 100 : 0;
+
+  return {
+    unitsNow,
+    baselineUnits,
+    netDeposited,
+    strategyDeltaUnits,
+    strategyDeltaPct,
+  };
+}
+
 export default function ScoreboardView({
   group,
   snapshots,
@@ -113,12 +182,14 @@ export default function ScoreboardView({
   });
 
   // 4. Transform snapshots into series data for the line chart
-  const chartData = snapshotsWithLabels.map((snap) => {
+  const chartData = snapshotsWithLabels.map((snap, snapIdx) => {
     const point: any = {
       name: snap.labelName,
       timestamp: snap.timestamp || Date.now(),
       eventType: snap.eventType || 'manual',
     };
+
+    const snapsUpToPoint = sortedSnapshots.slice(0, snapIdx + 1);
 
     group.memberMints.forEach((mint) => {
       const baseline = coinBaselines[mint];
@@ -135,16 +206,8 @@ export default function ScoreboardView({
         const val = Number(bal.amountHuman);
         point[mint] = isNaN(val) ? 0 : val;
       } else {
-        const baseBal = baseline.balances.find((b) => b && b.mint === mint);
-        if (!baseBal || !baseBal.amountHuman || Number(baseBal.amountHuman) === 0) return;
-        
-        const valNow = Number(bal.amountHuman);
-        const valBase = Number(baseBal.amountHuman);
-        if (isNaN(valNow) || isNaN(valBase)) return;
-
-        // Normalize to 100
-        const indexedValue = (valNow / valBase) * 100;
-        point[mint] = indexedValue;
+        const growth = getCoinStrategyGrowth(snapsUpToPoint, mint);
+        point[mint] = 100 + growth.strategyDeltaPct;
       }
     });
 
@@ -169,19 +232,15 @@ export default function ScoreboardView({
     const currentBal = Array.isArray(groupBalances) ? groupBalances.find((b) => b && b.mint === mint) : undefined;
     const unitsNow = currentBal ? currentBal.amountHuman : 0;
 
-    const baseBal = baseline.balances.find((b) => b && b.mint === mint);
-    const unitsBase = baseBal ? baseBal.amountHuman : 0;
-
-    const deltaUnits = unitsNow - unitsBase;
-    const deltaPct = unitsBase > 0 ? (deltaUnits / unitsBase) * 100 : 0;
+    const growth = getCoinStrategyGrowth(sortedSnapshots, mint, unitsNow);
 
     return {
       mint,
       symbol: meta.symbol,
       hasBaseline: true,
-      unitsNow,
-      deltaUnits,
-      deltaPct,
+      unitsNow: growth.unitsNow,
+      deltaUnits: growth.strategyDeltaUnits,
+      deltaPct: growth.strategyDeltaPct,
       color,
     };
   });
@@ -191,6 +250,9 @@ export default function ScoreboardView({
     if (active && payload && payload.length) {
       const snap = snapshotsWithLabels.find((s) => s.labelName === label);
       if (!snap) return null;
+
+      const snapIdx = snapshotsWithLabels.findIndex((s) => s.id === snap.id);
+      const snapsUpToPoint = sortedSnapshots.slice(0, snapIdx + 1);
 
       return (
         <div className="bg-slate-950 border border-slate-800 p-3.5 rounded-xl shadow-2xl space-y-2 text-xs">
@@ -206,14 +268,14 @@ export default function ScoreboardView({
               const indexedVal = p.value;
               const balItem = Array.isArray(snap.balances) ? snap.balances.find((b) => b && b.mint === mint) : undefined;
               const baseline = coinBaselines[mint];
-              const baseBal = (baseline && Array.isArray(baseline.balances)) ? baseline.balances.find((b) => b && b.mint === mint) : undefined;
 
-              if (!balItem || !baseline || !baseBal) return null;
+              if (!balItem || !baseline) return null;
 
-              const unitsNow = balItem.amountHuman;
-              const unitsBase = baseBal.amountHuman;
-              const deltaUnits = unitsNow - unitsBase;
-              const deltaPct = unitsBase > 0 ? ((unitsNow - unitsBase) / unitsBase) * 100 : 0;
+              const growth = getCoinStrategyGrowth(snapsUpToPoint, mint);
+
+              const unitsNow = growth.unitsNow;
+              const deltaUnits = growth.strategyDeltaUnits;
+              const deltaPct = growth.strategyDeltaPct;
 
               const color = p.stroke;
               const symbol = balItem.symbol;
@@ -440,10 +502,13 @@ export default function ScoreboardView({
                         {Array.isArray(snap.balances) && snap.balances.map((bal: any) => {
                           if (!bal) return null;
                           const baseline = coinBaselines[bal.mint];
-                          const baseBal = (baseline && Array.isArray(baseline.balances)) ? baseline.balances.find((b) => b && b.mint === bal.mint) : undefined;
-                          const unitsBase = baseBal ? baseBal.amountHuman : 0;
-                          const changePct = unitsBase > 0 ? ((bal.amountHuman - unitsBase) / unitsBase) * 100 : 0;
-                          const showChange = baseline && (snap.timestamp || 0) >= (baseline.timestamp || 0) && unitsBase > 0;
+                          
+                          const snapIdx = snapshotsWithLabels.findIndex((s) => s.id === snap.id);
+                          const snapsUpToPoint = sortedSnapshots.slice(0, snapIdx + 1);
+                          const growth = getCoinStrategyGrowth(snapsUpToPoint, bal.mint);
+
+                          const changePct = growth.strategyDeltaPct;
+                          const showChange = baseline && (snap.timestamp || 0) >= (baseline.timestamp || 0);
                           
                           return (
                             <div key={bal.mint} className="flex justify-between items-center">

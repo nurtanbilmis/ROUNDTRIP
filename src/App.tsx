@@ -39,6 +39,7 @@ import {
   Layers,
   Sparkle,
   MoreVertical,
+  Lock,
   X
 } from 'lucide-react';
 
@@ -49,6 +50,13 @@ const getNextGroupColor = (activeGroups: LinkGroup[]): string => {
   if (freeColor) return freeColor;
   return colors[activeGroups.length % colors.length];
 };
+
+const STANDARD_PUBLIC_RPCS = [
+  'https://api.mainnet-beta.solana.com',
+  'https://rpc.ankr.com/solana',
+  'https://solana.public-rpc.com',
+  'https://api.turing.solana.com'
+];
 
 function Dashboard() {
   const {
@@ -71,74 +79,148 @@ function Dashboard() {
     return localStorage.getItem('roundtrip_rpc_warning_dismissed') === 'true';
   });
 
+  // Active namespace tracking
+  const activeNamespace = publicKey || 'guest';
+  const [hydratedNamespace, setHydratedNamespace] = useState<string | null>(null);
+
   // Multi-group state
-  const [groups, setGroups] = useState<LinkGroup[]>(() => {
-    const saved = localStorage.getItem('roundtrip_link_groups');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      } catch (e) {}
-    }
-    return [];
-  });
+  const [groups, setGroups] = useState<LinkGroup[]>([]);
 
   // Scoreboard snapshots (historical ledger)
-  const [snapshots, setSnapshots] = useState<BalanceSnapshot[]>(() => {
-    const loadedSnapshots: BalanceSnapshot[] = [];
-    
-    // Load group-specific snapshots
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith('roundtrip_snapshots_')) {
-        const saved = localStorage.getItem(key);
-        if (saved) {
+  const [snapshots, setSnapshots] = useState<BalanceSnapshot[]>([]);
+
+  // Load and migrate groups and snapshots for activeNamespace
+  useEffect(() => {
+    const ns = activeNamespace;
+    let loadedGroups: LinkGroup[] = [];
+    let loadedSnapshots: BalanceSnapshot[] = [];
+
+    const savedGroupsKey = `roundtrip_link_groups__${ns}`;
+    const savedGroups = localStorage.getItem(savedGroupsKey);
+
+    if (savedGroups) {
+      try {
+        const parsed = JSON.parse(savedGroups);
+        if (Array.isArray(parsed)) {
+          loadedGroups = parsed;
+        }
+      } catch (e) {}
+
+      // Load snapshots for this namespace
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(`roundtrip_snapshots__${ns}__`)) {
+          const saved = localStorage.getItem(key);
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              if (Array.isArray(parsed)) {
+                parsed.forEach((item) => {
+                  if (item && typeof item === 'object') {
+                    loadedSnapshots.push(item);
+                  }
+                });
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } else {
+      // No groups exist for this namespace.
+      // Case A: A real wallet is connected, and we can check if we should adopt "guest" groups
+      if (ns !== 'guest') {
+        const guestGroupsKey = `roundtrip_link_groups__guest`;
+        const guestGroupsStr = localStorage.getItem(guestGroupsKey);
+        
+        if (guestGroupsStr) {
           try {
-            const parsed = JSON.parse(saved);
-            if (Array.isArray(parsed)) {
-              parsed.forEach((item) => {
-                if (item && typeof item === 'object') {
-                  loadedSnapshots.push(item);
+            const parsedGuestGroups = JSON.parse(guestGroupsStr);
+            if (Array.isArray(parsedGuestGroups) && parsedGuestGroups.length > 0) {
+              loadedGroups = parsedGuestGroups;
+              
+              // Move snapshots from guest to real wallet namespace
+              for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith(`roundtrip_snapshots__guest__`)) {
+                  const saved = localStorage.getItem(key);
+                  if (saved) {
+                    try {
+                      const parsed = JSON.parse(saved);
+                      if (Array.isArray(parsed)) {
+                        parsed.forEach((item) => {
+                          if (item && typeof item === 'object') {
+                            loadedSnapshots.push(item);
+                          }
+                        });
+                      }
+                    } catch (e) {}
+                    // Delete guest snapshot key
+                    localStorage.removeItem(key);
+                  }
+                }
+              }
+              
+              // Clear guest groups
+              localStorage.removeItem(guestGroupsKey);
+              console.log(`Adopted guest groups into wallet ${ns}`);
+            }
+          } catch (e) {}
+        }
+      }
+
+      // Case B: If still empty (e.g. no guest groups or it was guest namespace),
+      // check for legacy migration (for whichever namespace is currently active,
+      // e.g., if a user loads the app with or without connected wallet).
+      if (loadedGroups.length === 0) {
+        const legacyGroupsStr = localStorage.getItem('roundtrip_link_groups');
+        if (legacyGroupsStr) {
+          try {
+            const parsedLegacyGroups = JSON.parse(legacyGroupsStr);
+            if (Array.isArray(parsedLegacyGroups) && parsedLegacyGroups.length > 0) {
+              loadedGroups = parsedLegacyGroups;
+              
+              // Move legacy snapshots: keys starts with 'roundtrip_snapshots_' (but not 'roundtrip_snapshots__')
+              const legacySnapshotKeys: string[] = [];
+              for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('roundtrip_snapshots_') && !key.startsWith('roundtrip_snapshots__')) {
+                  legacySnapshotKeys.push(key);
+                }
+              }
+
+              legacySnapshotKeys.forEach((key) => {
+                const saved = localStorage.getItem(key);
+                if (saved) {
+                  try {
+                    const parsed = JSON.parse(saved);
+                    if (Array.isArray(parsed)) {
+                      parsed.forEach((item) => {
+                        if (item && typeof item === 'object') {
+                          loadedSnapshots.push(item);
+                        }
+                      });
+                    }
+                  } catch (e) {}
+                  
+                  // Clean up legacy snapshot keys
+                  localStorage.removeItem(key);
                 }
               });
+
+              // Clean up legacy roundtrip_snapshots
+              localStorage.removeItem('roundtrip_snapshots');
+              // Clean up legacy link groups
+              localStorage.removeItem('roundtrip_link_groups');
+              console.log(`Migrated legacy groups into namespace ${ns}`);
             }
           } catch (e) {}
         }
       }
     }
 
-    // Backwards compatibility migration
-    const oldSaved = localStorage.getItem('roundtrip_snapshots');
-    if (oldSaved) {
-      try {
-        const parsed = JSON.parse(oldSaved);
-        if (Array.isArray(parsed)) {
-          const grouped: Record<string, BalanceSnapshot[]> = {};
-          parsed.forEach((s) => {
-            if (s && typeof s === 'object' && s.groupId) {
-              if (!grouped[s.groupId]) grouped[s.groupId] = [];
-              grouped[s.groupId].push(s);
-            }
-          });
-          Object.entries(grouped).forEach(([gId, snaps]) => {
-            localStorage.setItem(`roundtrip_snapshots_${gId}`, JSON.stringify(snaps));
-          });
-          parsed.forEach((item) => {
-            if (item && typeof item === 'object') {
-              loadedSnapshots.push(item);
-            }
-          });
-          localStorage.removeItem('roundtrip_snapshots');
-        }
-      } catch (e) {}
-    }
-
-    // Ensure all loaded snapshots have completely unique IDs to prevent duplicate React keys
+    // Deduplicate and assign snapshot IDs
     const seenIds = new Set<string>();
     const finalSnapshots: BalanceSnapshot[] = [];
-    
     loadedSnapshots.forEach((snap) => {
       if (snap && typeof snap === 'object') {
         if (!snap.id || seenIds.has(snap.id)) {
@@ -149,8 +231,13 @@ function Dashboard() {
       }
     });
 
-    return finalSnapshots;
-  });
+    // Update states
+    setGroups(loadedGroups);
+    setSnapshots(finalSnapshots);
+    
+    // Set the loaded namespace state
+    setHydratedNamespace(ns);
+  }, [activeNamespace]);
 
   // Master Token metadata dictionary (mint -> Token)
   const [tokenMetadata, setTokenMetadata] = useState<Record<string, Token>>(() => {
@@ -198,16 +285,28 @@ function Dashboard() {
 
   const [openMenuMint, setOpenMenuMint] = useState<string | null>(null);
 
-  // Persist state updates
+  // Persist link groups for active namespace
   useEffect(() => {
+    const ns = activeNamespace;
+    if (hydratedNamespace !== activeNamespace) {
+      // Race protection: skip saving if current in-memory state hasn't been loaded for the active namespace yet.
+      return;
+    }
     try {
-      localStorage.setItem('roundtrip_link_groups', JSON.stringify(groups));
+      localStorage.setItem(`roundtrip_link_groups__${ns}`, JSON.stringify(groups));
     } catch (err) {
       console.warn('Failed to save link groups to localStorage:', err);
     }
-  }, [groups]);
+  }, [groups, activeNamespace, hydratedNamespace]);
 
+  // Persist snapshots for active namespace
   useEffect(() => {
+    const ns = activeNamespace;
+    if (hydratedNamespace !== activeNamespace) {
+      // Race protection: skip saving if current in-memory state hasn't been loaded for the active namespace yet.
+      return;
+    }
+
     // Group snapshots by groupId
     const grouped: Record<string, BalanceSnapshot[]> = {};
     snapshots.forEach((s) => {
@@ -228,13 +327,13 @@ function Dashboard() {
       prunedSnapshotsList.push(...prunedSnaps);
 
       try {
-        localStorage.setItem(`roundtrip_snapshots_${gId}`, JSON.stringify(prunedSnaps));
+        localStorage.setItem(`roundtrip_snapshots__${ns}__${gId}`, JSON.stringify(prunedSnaps));
       } catch (err) {
         console.warn(`Failed to save snapshots for group ${gId} due to quota limit:`, err);
         // Fallback: prune even more aggressively to keep the app working
         try {
           const aggressivePrune = prunedSnaps.slice(-10);
-          localStorage.setItem(`roundtrip_snapshots_${gId}`, JSON.stringify(aggressivePrune));
+          localStorage.setItem(`roundtrip_snapshots__${ns}__${gId}`, JSON.stringify(aggressivePrune));
         } catch (innerErr) {
           console.error(`Failed to save snapshots for group ${gId} even with aggressive pruning:`, innerErr);
         }
@@ -246,7 +345,7 @@ function Dashboard() {
       setSnapshots(prunedSnapshotsList);
     }
 
-    // Clean up empty/obsolete keys
+    // Clean up empty/obsolete keys for this namespace
     const activeGroupIds = new Set(
       prunedSnapshotsList
         .filter((s) => s && s.groupId)
@@ -254,14 +353,14 @@ function Dashboard() {
     );
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i);
-      if (key && key.startsWith('roundtrip_snapshots_')) {
-        const gId = key.replace('roundtrip_snapshots_', '');
+      if (key && key.startsWith(`roundtrip_snapshots__${ns}__`)) {
+        const gId = key.replace(`roundtrip_snapshots__${ns}__`, '');
         if (!activeGroupIds.has(gId)) {
           localStorage.removeItem(key);
         }
       }
     }
-  }, [snapshots]);
+  }, [snapshots, activeNamespace, hydratedNamespace]);
 
   // Monitor membership changes (coin added/removed/moved) to fire snapshots automatically
   const prevGroupsRef = useRef<LinkGroup[]>(groups);
@@ -439,7 +538,12 @@ function Dashboard() {
     const groupMints = groupMintsJoined ? groupMintsJoined.split(',') : [];
     const balanceMints = balanceMintsJoined ? balanceMintsJoined.split(',') : [];
     const popularMints = DEFAULT_POPULAR_MINTS;
-    const allMints = Array.from(new Set([...groupMints, ...balanceMints, ...popularMints]));
+    const indexMints = [
+      'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij',
+      '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',
+      'So11111111111111111111111111111111111111112'
+    ];
+    const allMints = Array.from(new Set([...groupMints, ...balanceMints, ...popularMints, ...indexMints]));
 
     if (allMints.length === 0) return;
     setLoadingPrices(true);
@@ -465,9 +569,19 @@ function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, groupMintsJoined, balanceMintsJoined]);
 
-  // Auto-refresh rate ticker every 40 seconds
+  // Auto-refresh rate ticker every 40 seconds when connected
   useEffect(() => {
     if (!connected) return;
+    const interval = setInterval(() => {
+      refreshPrices();
+    }, 40000);
+    return () => clearInterval(interval);
+  }, [connected, refreshPrices]);
+
+  // Auto-refresh rate ticker every 40 seconds when disconnected (to show live index teaser)
+  useEffect(() => {
+    if (connected) return;
+    refreshPrices(); // initial landing load
     const interval = setInterval(() => {
       refreshPrices();
     }, 40000);
@@ -681,145 +795,207 @@ function Dashboard() {
           </div>
 
           <button
-            onClick={() => connect('demo')}
+            onClick={() => connect()}
             className="bg-emerald-600 hover:bg-emerald-500 text-slate-950 text-xs font-bold px-4 py-2 rounded-lg transition-all shadow-md shadow-emerald-900/20 flex items-center gap-1.5 cursor-pointer"
           >
-            <Sparkles className="w-3.5 h-3.5" />
-            Launch Demo Sandbox
+            <Wallet className="w-3.5 h-3.5 text-slate-950" />
+            Connect Wallet
           </button>
         </header>
 
-        {/* Hero Area */}
-        <main className="max-w-6xl mx-auto px-6 py-12 flex-grow flex flex-col justify-center space-y-12 w-full">
-          <div className="text-center space-y-4">
-            <span className="text-xs bg-slate-900 text-slate-450 border border-slate-800 px-3.5 py-1.5 rounded-full font-bold uppercase tracking-widest inline-block">
-              100% Non-Custodial Multi-Group Rebalancer
-            </span>
-            <h2 className="text-4xl md:text-5xl font-black text-white tracking-tight leading-tight max-w-2xl mx-auto">
-              Equal-Weight Rebalancing for <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-emerald-500">Solana Bag Holders</span>
-            </h2>
-            <p className="text-slate-400 text-sm max-w-xl mx-auto leading-relaxed">
-              Nothing is ever deposited or withdrawn. Turn volatility into a direct compound loop with color-coded link-groups right inside your wallet.
-            </p>
+        {/* Tab navigation for landing page */}
+        <div className="max-w-6xl mx-auto px-6 pt-6 w-full shrink-0">
+          <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900 border border-slate-850 p-4 rounded-xl">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setActiveTab('wallet');
+                }}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  activeTab === 'wallet' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Wallet className="w-3.5 h-3.5" />
+                Wallet Inventory
+              </button>
+              <button
+                onClick={() => {
+                  setActiveTab('prices');
+                }}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeTab === 'prices' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Market Intel
+              </button>
+              <button
+                onClick={() => {
+                  setActiveTab('history');
+                }}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeTab === 'history' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Historical ledger logs
+              </button>
+            </div>
           </div>
+        </div>
 
-          {/* Interactive Split Setup */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-            
-            {/* Presets Grid */}
-            <div className="lg:col-span-7 space-y-5">
-              <div>
-                <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
-                  <Sparkle className="w-4 h-4 text-emerald-400" />
-                  Explore Allocation Presets
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Presets act as templates: choosing one spawns a new color-coded group pre-filled with verified assets.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {PRESETS.map((p) => (
-                  <div
-                    key={p.name}
-                    className="bg-slate-900 border border-slate-850 hover:border-slate-800 p-5 rounded-2xl flex flex-col justify-between min-h-[200px] transition-all relative group"
-                  >
-                    <div className="space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <span className="font-extrabold text-white text-sm">{p.name}</span>
-                        <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border uppercase ${
-                          p.riskLabel === 'Safe' 
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                            : p.riskLabel.includes('High')
-                            ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                            : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                        }`}>
-                          {p.riskLabel} Risk
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-400 leading-relaxed font-sans line-clamp-3">
-                        {p.description}
-                      </p>
-                      
-                      <div className="flex flex-wrap gap-1 pt-1">
-                        {p.tokens.map(t => (
-                          <span key={t.expectedMint} className="text-[9px] bg-slate-950 border border-slate-850 text-slate-400 font-mono px-1.5 py-0.5 rounded">
-                            {t.symbol}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    
-                    <button
-                      onClick={() => setSelectedPreset(p)}
-                      className="w-full mt-4 bg-slate-950 border border-emerald-500/10 group-hover:border-emerald-500/30 group-hover:bg-slate-850 text-emerald-400 hover:text-emerald-350 text-xs font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-1 cursor-pointer"
-                    >
-                      Inspect Liquidity & Deploy
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
+        {/* Tab contents */}
+        {activeTab === 'wallet' && (
+          <main className="max-w-6xl mx-auto px-6 py-12 flex-grow flex flex-col justify-center space-y-12 w-full">
+            <div className="text-center space-y-4">
+              <span className="text-xs bg-slate-900 text-slate-450 border border-slate-800 px-3.5 py-1.5 rounded-full font-bold uppercase tracking-widest inline-block">
+                100% Non-Custodial Multi-Group Rebalancer
+              </span>
+              <h2 className="text-4xl md:text-5xl font-black text-white tracking-tight leading-tight max-w-2xl mx-auto">
+                Full Control Rebalancing for <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-emerald-500">Solana Bag Holders</span>
+              </h2>
+              <p className="text-slate-400 text-sm max-w-xl mx-auto leading-relaxed">
+                Equal weight by default, set custom weights per coin whenever you want. Turn volatility into a direct compound loop with color-coded link-groups right inside your wallet.
+              </p>
             </div>
 
-            {/* Wallet Box */}
-            <div className="lg:col-span-5 bg-slate-900 border border-slate-850 rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6 relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-2xl rounded-full"></div>
+            {/* Interactive Split Setup */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
               
-              <div className="space-y-2">
-                <h3 className="font-extrabold text-white text-lg flex items-center gap-2">
-                  <Wallet className="w-5 h-5 text-emerald-400" />
-                  Connect Wallet
-                </h3>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Connect your web3 Solana extension to access Round Trip in non-custodial custody. Funds never leave your wallet.
-                </p>
+              {/* Presets Grid */}
+              <div className="lg:col-span-7 space-y-5">
+                <div>
+                  <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+                    <Sparkle className="w-4 h-4 text-emerald-400" />
+                    Explore Allocation Presets
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Presets act as templates: choosing one spawns a new color-coded group pre-filled with verified assets.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {PRESETS.map((p) => (
+                    <div
+                      key={p.name}
+                      className="bg-slate-900 border border-slate-850 hover:border-slate-800 p-5 rounded-2xl flex flex-col justify-between min-h-[200px] transition-all relative group"
+                    >
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="font-extrabold text-white text-sm">{p.name}</span>
+                          <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full border uppercase ${
+                            p.riskLabel === 'Safe' 
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                              : p.riskLabel.includes('High')
+                              ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                              : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                          }`}>
+                            {p.riskLabel} Risk
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 leading-relaxed font-sans line-clamp-3">
+                          {p.description}
+                        </p>
+                        
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {p.tokens.map(t => (
+                            <span key={t.expectedMint} className="text-[9px] bg-slate-950 border border-slate-850 text-slate-400 font-mono px-1.5 py-0.5 rounded">
+                              {t.symbol}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      
+                      <button
+                        onClick={() => setSelectedPreset(p)}
+                        className="w-full mt-4 bg-slate-950 border border-emerald-500/10 group-hover:border-emerald-500/30 group-hover:bg-slate-850 text-emerald-400 hover:text-emerald-350 text-xs font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-1 cursor-pointer"
+                      >
+                        Inspect Liquidity & Deploy
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
 
-              <button
-                onClick={() => connect('real')}
-                disabled={connecting}
-                className="w-full bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-extrabold py-4 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10 cursor-pointer text-sm"
-              >
-                {connecting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                    Detecting wallets...
-                  </>
-                ) : (
-                  <>
-                    <Wallet className="w-4.5 h-4.5 text-slate-950" />
-                    Connect Solana Wallet
-                  </>
-                )}
-              </button>
+              {/* Wallet Box */}
+              <div className="lg:col-span-5 bg-slate-900 border border-slate-850 rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6 relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-2xl rounded-full"></div>
+                
+                <div className="space-y-2">
+                  <h3 className="font-extrabold text-white text-lg flex items-center gap-2">
+                    <Wallet className="w-5 h-5 text-emerald-400" />
+                    Connect Wallet
+                  </h3>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Connect your web3 Solana extension to access Round Trip in non-custodial custody. Funds never leave your wallet.
+                  </p>
+                </div>
 
-              <div className="relative flex py-1 items-center">
-                <div className="flex-grow border-t border-slate-800"></div>
-                <span className="flex-shrink mx-3 text-slate-500 text-[10px] uppercase font-bold tracking-wider">or paper-trade</span>
-                <div className="flex-grow border-t border-slate-800"></div>
+                <button
+                  onClick={() => connect()}
+                  disabled={connecting}
+                  className="w-full bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-extrabold py-4 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10 cursor-pointer text-sm"
+                >
+                  {connecting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                      Detecting wallets...
+                    </>
+                  ) : (
+                    <>
+                      <Wallet className="w-4.5 h-4.5 text-slate-950" />
+                      Connect Solana Wallet
+                    </>
+                  )}
+                </button>
               </div>
 
-              <button
-                onClick={() => connect('demo')}
-                className="w-full bg-slate-950 border border-emerald-500/20 hover:bg-slate-900 text-emerald-400 text-xs font-bold py-3.5 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                Launch Demo Sandbox
-              </button>
-
-              <div className="bg-slate-950 border border-slate-850 rounded-xl p-4 text-[11px] text-slate-500 leading-normal">
-                <span className="text-slate-300 font-bold block mb-1">Simulated Sandbox includes:</span>
-                • Fully simulated wallet inventory<br />
-                • Interactive price movement & volatility drift<br />
-                • Instant equal-weight rebalance swap simulations
-              </div>
             </div>
 
-          </div>
+            <DisclaimerCard />
+          </main>
+        )}
 
-          <DisclaimerCard />
-        </main>
+        {activeTab === 'prices' && (
+          <main className="max-w-6xl mx-auto px-6 py-12 flex-grow flex flex-col justify-start space-y-6 w-full">
+            <PriceView
+              balancesWithPrice={[]}
+              loadingPrices={loadingPrices}
+              onRefreshPrices={refreshPrices}
+              groups={groups}
+              isVerifiedCoin={isVerifiedCoin}
+              prices={prices}
+              tokenMetadata={tokenMetadata}
+              onSelectGroup={() => {}}
+              onNavigateToWallet={() => {}}
+              landingMode={true}
+              onConnect={() => connect()}
+            />
+          </main>
+        )}
+
+        {activeTab === 'history' && (
+          <main className="max-w-6xl mx-auto px-6 py-24 flex-grow flex flex-col justify-center items-center w-full">
+            <div className="bg-slate-900 border border-slate-850 p-10 rounded-2xl shadow-2xl text-center space-y-5 max-w-md mx-auto relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-2xl rounded-full"></div>
+              <div className="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mx-auto">
+                <Lock className="w-8 h-8" />
+              </div>
+              <div className="space-y-2">
+                <h3 className="font-extrabold text-white text-xl">Your ledger is private</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">
+                  Connect your wallet to view your rebalancing history and coin scoreboard.
+                </p>
+              </div>
+              <button
+                onClick={() => connect()}
+                className="w-full bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-extrabold py-3 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10 cursor-pointer text-xs"
+              >
+                <Wallet className="w-4 h-4 text-slate-950" />
+                Connect Solana Wallet
+              </button>
+            </div>
+          </main>
+        )}
 
         {/* Footer */}
         <footer className="h-10 bg-slate-950 border-t border-slate-850 flex items-center justify-between px-6 shrink-0 text-[10px] text-slate-500">
@@ -861,24 +1037,15 @@ function Dashboard() {
               </div>
               <h3 className="text-lg font-bold text-white">Group "{showLandingSuccess}" Created!</h3>
               <p className="text-sm text-slate-300 leading-relaxed">
-                The preset link-group has been initialized and saved. Connect your wallet or launch the Demo Sandbox to start equal-weight tracking and volatility harvesting.
+                The preset link-group has been initialized and saved. Connect your wallet to start tracking and volatility harvesting.
               </p>
               <div className="flex flex-col gap-2 pt-2">
                 <button
                   onClick={() => {
                     setShowLandingSuccess(null);
-                    connect('demo');
+                    connect();
                   }}
                   className="w-full bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-extrabold py-2.5 rounded-lg text-xs transition-colors cursor-pointer"
-                >
-                  Launch Demo Sandbox
-                </button>
-                <button
-                  onClick={() => {
-                    setShowLandingSuccess(null);
-                    connect('real');
-                  }}
-                  className="w-full bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2.5 rounded-lg text-xs transition-colors cursor-pointer"
                 >
                   Connect Real Wallet
                 </button>
@@ -931,7 +1098,7 @@ function Dashboard() {
               title="Settings & RPC"
             >
               <Settings className="w-4 h-4" />
-              {rpcUrl === 'https://api.mainnet-beta.solana.com' && (
+              {STANDARD_PUBLIC_RPCS.includes(rpcUrl) && (
                 <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-amber-500 rounded-full" />
               )}
             </button>
@@ -948,7 +1115,7 @@ function Dashboard() {
                   <p className="text-[9px] text-slate-500 leading-normal">
                     Paste a private RPC URL (e.g. from Helius free tier). Never share this URL publicly.
                   </p>
-                  {rpcUrl === 'https://api.mainnet-beta.solana.com' && (
+                  {STANDARD_PUBLIC_RPCS.includes(rpcUrl) && (
                     <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[9px] text-amber-400 leading-normal animate-in fade-in duration-200">
                       <strong>Notice:</strong> Using public Solana RPC node. Live Jupiter quoting & confirmations may be throttled. Custom node is recommended for optimal speed.
                     </div>
@@ -1011,7 +1178,7 @@ function Dashboard() {
           <div className="flex items-center gap-4">
             <div className="flex flex-col items-end">
               <span className="text-[9px] text-slate-500 uppercase font-black tracking-wider">
-                {type === 'demo' ? 'SANDBOX PROTOCOL' : 'CONNECTED WEB3'}
+                CONNECTED WEB3
               </span>
               <span className="font-mono text-xs text-emerald-400 font-extrabold">
                 {publicKey ? `${publicKey.substring(0, 4)}...${publicKey.substring(publicKey.length - 4)}` : ''}
@@ -1034,13 +1201,13 @@ function Dashboard() {
       {/* Primary Layout Frame */}
       <main className="max-w-7xl mx-auto px-6 py-8 flex-grow w-full space-y-6">
         
-        {!rpcWarningDismissed && type !== 'demo' && rpcUrl === 'https://api.mainnet-beta.solana.com' && (
+        {!rpcWarningDismissed && STANDARD_PUBLIC_RPCS.includes(rpcUrl) && (
           <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 flex items-start gap-3 relative text-amber-400 animate-in fade-in duration-200">
             <span className="text-base">⚠️</span>
             <div className="flex-grow space-y-1 text-xs">
               <h4 className="font-extrabold text-white">Using Public Solana RPC</h4>
               <p className="text-slate-300 leading-relaxed">
-                You're on the public Solana RPC, which is rate-limited and may cause failed balance loads or swaps. Add a private RPC (Helius, Triton, QuickNode) in Settings for reliable trading.
+                You're on a public Solana RPC, which is rate-limited and may cause failed balance loads or swaps. Add a private RPC (Helius, Triton, QuickNode) in Settings for reliable trading.
               </p>
             </div>
             <button
@@ -1183,6 +1350,10 @@ function Dashboard() {
                 const owningGroup = groups.find((g) => g.memberMints.includes(item.mint));
                 const isLinked = !!owningGroup;
                 const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
+                const groupStats = owningGroup ? getGroupStats(owningGroup) : null;
+                const weightPercent = (groupStats && groupStats.totalUsd > 0)
+                  ? (item.usdValue / groupStats.totalUsd) * 100
+                  : 0;
 
                 const handleRowClick = () => {
                   if (linkingGroupId) {
@@ -1190,7 +1361,7 @@ function Dashboard() {
                   } else if (owningGroup) {
                     setSelectedGroupId(owningGroup.id);
                   } else {
-                    setConvertSuccessMessage(`This asset is currently unlinked. Click a basket tile's "Link Coins" or use the asset action menu to add it to an equal-weight rebalancing basket.`);
+                    setConvertSuccessMessage(`This asset is currently unlinked. Click a basket tile's "Link Coins" or use the asset action menu to add it to a rebalancing basket.`);
                     setTimeout(() => setConvertSuccessMessage(null), 4500);
                   }
                 };
@@ -1246,6 +1417,11 @@ function Dashboard() {
                         <span className="font-bold text-white text-xs">
                           ${item.usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
+                        {isLinked && (
+                          <span className="text-[10px] text-slate-500 font-extrabold">
+                            {weightPercent.toFixed(1)}%
+                          </span>
+                        )}
                         <span className={`text-[10px] ${item.change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                           {item.change24h >= 0 ? '+' : ''}{item.change24h.toFixed(1)}%
                         </span>
@@ -1550,27 +1726,31 @@ function Dashboard() {
 
                     {/* MAIN TOKENS LIST */}
                     <div className="space-y-4">
-                      {/* Clustered Linked Tokens per Group */}
-                      {clusteredBlocks.map(({ group, coins }) => {
-                        const gColors = getGroupColorClasses(group.color);
-                        return (
-                          <div key={group.id} className="space-y-2">
-                            {/* Thin colored band header for group */}
-                            <div className="flex items-center gap-2 border-b border-slate-800 pb-1.5">
-                              <span className={`w-1.5 h-3 rounded-sm ${gColors.bgSolid}`} />
-                              <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-350">
-                                {group.name} Basket
-                              </span>
-                              <span className="text-[9px] bg-slate-950 text-slate-500 font-mono px-1.5 py-0.5 rounded ml-auto">
-                                {coins.length} linked
-                              </span>
-                            </div>
-                            <div className="space-y-1.5">
-                              {coins.map(item => renderDenseRow(item))}
-                            </div>
-                          </div>
-                        );
-                      })}
+                      {/* Clustered Linked Tokens per Group (rendered in a 2-column grid on desktop) */}
+                      {clusteredBlocks.length > 0 && (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          {clusteredBlocks.map(({ group, coins }) => {
+                            const gColors = getGroupColorClasses(group.color);
+                            return (
+                              <div key={group.id} className="space-y-2">
+                                {/* Thin colored band header for group */}
+                                <div className="flex items-center gap-2 border-b border-slate-800 pb-1.5">
+                                  <span className={`w-1.5 h-3 rounded-sm ${gColors.bgSolid}`} />
+                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-350">
+                                    {group.name} Basket
+                                  </span>
+                                  <span className="text-[9px] bg-slate-950 text-slate-500 font-mono px-1.5 py-0.5 rounded ml-auto">
+                                    {coins.length} linked
+                                  </span>
+                                </div>
+                                <div className="space-y-1.5">
+                                  {coins.map(item => renderDenseRow(item))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
 
                       {/* Unlinked Coins Section */}
                       {unlinkedMainCoins.length > 0 && (
@@ -1592,7 +1772,7 @@ function Dashboard() {
 
                       {walletBalances.length === 0 && (
                         <div className="text-center py-8 text-slate-500 text-sm">
-                          No assets found in your wallet. Use Demo Sandbox or connect a wallet.
+                          No assets found in your wallet. Connect a wallet with active Solana assets.
                         </div>
                       )}
 
@@ -1817,7 +1997,7 @@ function Dashboard() {
           </div>
         </div>
         <div className="flex gap-4 text-[10px] text-slate-500">
-          <span>Round Trip Rebalancer - Non-Custodial Multi-Basket Architecture</span>
+          <span>Round Trip Rebalancer · Non-Custodial Multi-Basket Architecture</span>
         </div>
       </footer>
     </div>

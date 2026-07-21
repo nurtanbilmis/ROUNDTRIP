@@ -253,8 +253,25 @@ export default function WithdrawModal({
     await onRefreshPrices();
     await refreshBalances();
 
-    // Log the historical snapshot
-    onSaveSnapshot(group.id, group.name, initialBalances, initialTotalUsd, 'cashout');
+    // Compute exact remaining balances post-cashout for accurate tracking
+    const finalBalances = initialBalances.map(b => {
+      const sell = sellsList.find(s => s.token.mint === b.mint);
+      if (sell && checkedMints.has(b.mint)) {
+        const decimals = sell.token.decimals || 9;
+        const soldHuman = sell.sellAmountBase / Math.pow(10, decimals);
+        return {
+          ...b,
+          amount: Math.max(0, b.amount - sell.sellAmountBase),
+          amountHuman: Math.max(0, b.amountHuman - soldHuman),
+          usdValue: Math.max(0, b.usdValue - sell.estimatedUsd)
+        };
+      }
+      return b;
+    });
+    const finalTotalUsd = finalBalances.reduce((sum, b) => sum + b.usdValue, 0);
+
+    // Log the historical snapshot with accurate remaining balances
+    onSaveSnapshot(group.id, group.name, finalBalances, finalTotalUsd, 'cashout');
 
     setExecuting(false);
     onClose();

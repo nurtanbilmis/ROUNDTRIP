@@ -13,6 +13,8 @@ interface PriceViewProps {
   tokenMetadata: Record<string, Token>;
   onSelectGroup: (groupId: string) => void;
   onNavigateToWallet: () => void;
+  landingMode?: boolean;
+  onConnect?: () => void;
 }
 
 export default function PriceView({
@@ -25,6 +27,8 @@ export default function PriceView({
   tokenMetadata,
   onSelectGroup,
   onNavigateToWallet,
+  landingMode = false,
+  onConnect,
 }: PriceViewProps) {
   // Top Index Coin definition
   const topIndexConfigs = [
@@ -73,6 +77,45 @@ export default function PriceView({
     const changeB = b.change24h || 0;
     return changeB - changeA;
   });
+
+  // Calculate total portfolio values and enrich held assets data
+  let totalHoldingsValue = 0;
+  let total24hMoveUsd = 0;
+
+  const enrichedCoins = sortedCoins.map((item) => {
+    const priceInfo = prices[item.mint] || { price: item.price || 0, change24h: item.change24h || 0 };
+    const price = priceInfo.price;
+    const change24h = priceInfo.change24h || 0;
+    const currentHoldingsUsd = item.amountHuman * price;
+    const factor = 1 + (change24h / 100);
+    const holdings24hChangeUsd = factor !== 0 ? currentHoldingsUsd - (currentHoldingsUsd / factor) : 0;
+    
+    totalHoldingsValue += currentHoldingsUsd;
+    total24hMoveUsd += holdings24hChangeUsd;
+
+    const owningGroup = groups.find((g) => g.memberMints.includes(item.mint));
+    const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
+    const isCrashed = change24h <= -40.0;
+
+    return {
+      item,
+      price,
+      change24h,
+      currentHoldingsUsd,
+      holdings24hChangeUsd,
+      owningGroup,
+      gColors,
+      isCrashed,
+    };
+  });
+
+  const handleRowClick = (row: typeof enrichedCoins[0]) => {
+    if (row.owningGroup) {
+      onSelectGroup(row.owningGroup.id);
+    } else {
+      onNavigateToWallet();
+    }
+  };
 
   // Helper renderer for a standard super-compact tile
   const renderCoinTile = (mint: string, symbol: string, logoURI: string | undefined, isTopIndex: boolean = false) => {
@@ -160,7 +203,7 @@ export default function PriceView({
   return (
     <div id="price-view" className="space-y-4">
       
-      {/* Intro Stats Banner - Clean & Compact */}
+      {/* Intro Stats Banner: Clean & Compact */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl flex flex-row justify-between items-center gap-4">
         <div className="space-y-0.5">
           <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
@@ -203,21 +246,149 @@ export default function PriceView({
         </div>
       </div>
 
-      {/* HELD ASSETS LIST */}
-      <div className="space-y-1.5">
-        <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider pl-1">Held Assets Portfolio</span>
-        {sortedCoins.length === 0 ? (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 text-center text-slate-500 text-xs">
-            No other qualifying held coins found. Connect a wallet with active Solana assets or enable the Demo Sandbox.
+      {/* Portfolio Summary / CTA Strip */}
+      {landingMode ? (
+        <div className="bg-slate-900 border border-slate-850 p-8 rounded-xl shadow-md text-center space-y-4 max-w-lg mx-auto">
+          <div className="w-12 h-12 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mx-auto">
+            <Sparkles className="w-6 h-6" />
           </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-            {sortedCoins.map((item) => renderCoinTile(item.mint, item.symbol, item.logoURI, false))}
+          <div className="space-y-1.5">
+            <h4 className="text-white font-extrabold text-base">See your wallet's movement</h4>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              Connect your wallet to view your holdings, their 24h dollar movement, and total value.
+            </p>
           </div>
-        )}
-      </div>
+          <button
+            onClick={onConnect}
+            className="bg-emerald-500 hover:bg-emerald-450 text-slate-950 text-xs font-bold px-5 py-2.5 rounded-lg transition-all shadow-md inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            Connect Wallet
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* Portfolio Summary Strip */}
+          <div className="grid grid-cols-2 gap-4 bg-slate-900 border border-slate-850 p-4 rounded-xl shadow-md">
+            <div className="space-y-1">
+              <span className="text-[10px] font-extrabold uppercase text-slate-500 tracking-wider block">
+                Total Holdings Value
+              </span>
+              <span className="font-mono text-lg font-black text-white">
+                ${totalHoldingsValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="space-y-1">
+              <span className="text-[10px] font-extrabold uppercase text-slate-500 tracking-wider block">
+                Total 24h Move ($)
+              </span>
+              <span className={`font-mono text-lg font-black ${total24hMoveUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {total24hMoveUsd >= 0 ? '+' : ''}${total24hMoveUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+          </div>
 
-      {/* Explanatory Intuition Card - Clean & Tight */}
+          {/* HELD ASSETS LIST */}
+          <div className="space-y-1.5">
+            <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider pl-1">Held Assets Portfolio</span>
+            {enrichedCoins.length === 0 ? (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 text-center text-slate-500 text-xs">
+                No other qualifying held coins found. Connect a wallet with active Solana assets.
+              </div>
+            ) : (
+              <div className="bg-slate-900 border border-slate-850 rounded-xl overflow-hidden shadow-xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[700px]">
+                    <thead>
+                      <tr className="border-b border-slate-850 bg-slate-950/60 text-[9px] font-extrabold uppercase text-slate-400 tracking-wider select-none">
+                        <th className="py-3 px-4">Coin</th>
+                        <th className="py-3 px-4 text-right">Units Held</th>
+                        <th className="py-3 px-4 text-right">Price</th>
+                        <th className="py-3 px-4 text-right">24h %</th>
+                        <th className="py-3 px-4 text-right">24h $ (holdings)</th>
+                        <th className="py-3 px-4 text-right">Holdings $</th>
+                        <th className="py-3 px-4 text-right">Basket</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-850/60">
+                      {enrichedCoins.map((row) => {
+                        const { item, price, change24h, currentHoldingsUsd, holdings24hChangeUsd, owningGroup, gColors, isCrashed } = row;
+                        return (
+                          <tr
+                            key={item.mint}
+                            onClick={() => handleRowClick(row)}
+                            className={`hover:bg-slate-850/30 transition-all cursor-pointer text-xs font-mono group border-b border-slate-850/30 ${
+                              isCrashed ? 'bg-rose-950/10 border-l-2 border-l-rose-500' : ''
+                            }`}
+                            title={`Click to view in ${owningGroup ? `basket: ${owningGroup.name}` : 'wallet inventory'}`}
+                          >
+                            {/* Coin column */}
+                            <td className="py-3 px-4 flex items-center gap-2 font-sans">
+                              <TokenLogo logoURI={item.logoURI} symbol={item.symbol} size="sm" />
+                              <div className="min-w-0 leading-none">
+                                <div className="flex items-center gap-1.5">
+                                  <strong className="text-white font-extrabold text-xs block">{item.symbol}</strong>
+                                  {isCrashed && (
+                                    <span className="bg-rose-500/20 text-rose-400 text-[8px] font-black uppercase px-1 rounded">
+                                      DROP
+                                    </span>
+                                  )}
+                                </div>
+                                {/* Mint title on hover */}
+                                <span className="text-[10px] text-slate-500 block truncate max-w-[120px]" title={item.mint}>
+                                  {item.mint.substring(0, 4)}...{item.mint.substring(item.mint.length - 4)}
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* Units held */}
+                            <td className="py-3 px-4 text-right text-slate-300">
+                              {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                            </td>
+
+                            {/* Price */}
+                            <td className="py-3 px-4 text-right text-slate-200">
+                              {price > 0 ? formatPrice(price) : <span className="text-rose-500 text-[10px]">Offline</span>}
+                            </td>
+
+                            {/* 24h % */}
+                            <td className={`py-3 px-4 text-right font-bold ${change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {change24h >= 0 ? '+' : ''}{change24h.toFixed(1)}%
+                            </td>
+
+                            {/* 24h $ holdings */}
+                            <td className={`py-3 px-4 text-right font-bold ${holdings24hChangeUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {holdings24hChangeUsd >= 0 ? '+' : ''}${holdings24hChangeUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+
+                            {/* Your Holdings $ */}
+                            <td className="py-3 px-4 text-right text-white font-bold">
+                              ${currentHoldingsUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+
+                            {/* Basket column */}
+                            <td className="py-3 px-4 text-right">
+                              {owningGroup && gColors ? (
+                                <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-300">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${gColors.bgSolid}`} />
+                                  {owningGroup.name}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-slate-550 font-bold">Unlinked</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Explanatory Intuition Card: Clean & Tight */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl">
         <div className="flex items-start gap-3">
           <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg shrink-0">
