@@ -32,6 +32,7 @@ export interface LinkGroup {
   name: string;
   color: string; // 'violet' | 'amber' | 'sky' | 'rose' | 'lime'
   memberMints: string[];
+  targetWeights?: Record<string, number>; // mint -> target percent
 }
 
 export const GROUP_COLORS = ['violet', 'amber', 'sky', 'rose', 'lime'];
@@ -142,7 +143,7 @@ export interface BalanceSnapshot {
   }[];
 }
 
-export type WalletType = 'phantom' | 'solflare' | 'backpack' | 'demo' | null;
+export type WalletType = 'phantom' | 'solflare' | 'backpack' | null;
 
 export interface SolanaWalletState {
   publicKey: string | null;

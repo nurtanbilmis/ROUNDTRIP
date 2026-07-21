@@ -223,28 +223,7 @@ export async function fetchPricesAndInfo(mints: string[]): Promise<Record<string
     console.error('Error fetching 24h changes from DexScreener:', err);
   }
 
-  // Labeled mock fallback overlay ONLY when Sandbox (demo) mode is active and we have 0 prices
-  const isSandbox = typeof window !== 'undefined' && localStorage.getItem('roundtrip_demo_active') === 'true';
-  for (const mint of mints) {
-    if (result[mint].price === 0) {
-      if (isSandbox) {
-        // Return realistic mock fallback for sandbox mode so offline testing works smoothly
-        if (mint === 'So11111111111111111111111111111111111111112') {
-          result[mint] = { price: 145.5, change24h: 3.2 };
-        } else if (mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
-          result[mint] = { price: 1.0, change24h: 0.01 };
-        } else if (mint === 'JUPyiwrYJFskUPiFG4gpvXvjTE76SreV8NToA8Y5YyJ') {
-          result[mint] = { price: 1.12, change24h: -1.4 };
-        } else if (mint === 'DezXAZ8z7PnrFcPykJzn99s94ChKnmk699rCgHmzUM6y') {
-          result[mint] = { price: 0.0000224, change24h: -15.5 };
-        } else {
-          result[mint] = { price: 1.0, change24h: 0.0 };
-        }
-      } else {
-        // Real mode: keep price as 0 ("price unavailable"), which will exclude it from calculations
-      }
-    }
-  }
+  // Real mode: keep price as 0 ("price unavailable"), which will exclude it from calculations
 
   return result;
 }

@@ -55,7 +55,7 @@ export default function ConvertModal({
   onClose,
   onSuccess,
 }: ConvertModalProps) {
-  const { balances, addDemoFunds, type, publicKey, signAndExecuteSwap, refreshBalances, slippageBps } = useSolanaWallet();
+  const { balances, type, publicKey, signAndExecuteSwap, refreshBalances, slippageBps } = useSolanaWallet();
   
   const [chosenGroupId, setChosenGroupId] = useState<string | null>(activeGroupId);
   const [walletTokens, setWalletTokens] = useState<Token[]>(POPULAR_TOKENS_METADATA);
@@ -129,21 +129,23 @@ export default function ConvertModal({
   const baseBalance = balances[depositToken.address] || 0;
   const humanBalance = depositToken.decimals !== undefined ? baseBalance / Math.pow(10, depositToken.decimals) : 0;
 
-  // Equal weight calculations
+  // Weight-aware split calculations (equal weight is the default)
   const tokenCount = selectedTokens.length;
-  const targetPercent = tokenCount > 0 ? 100 / tokenCount : 0;
 
-  // Calculate swaps required
+  const getWeightFraction = (mint: string): number => {
+    const tw = selectedGroup?.targetWeights;
+    if (tw && tw[mint] !== undefined) return tw[mint]; // stored as fraction 0..1
+    return tokenCount > 0 ? 1 / tokenCount : 0;         // equal-weight fallback
+  };
+
   const getRequiredSwaps = (): { targetToken: Token; depositAmountPart: number }[] => {
     const amountNum = parseFloat(depositAmount) || 0;
     if (amountNum <= 0 || tokenCount === 0) return [];
-
-    const amountPerToken = amountNum / tokenCount;
     return selectedTokens
       .filter((t) => t.address !== depositToken.address)
       .map((t) => ({
         targetToken: t,
-        depositAmountPart: amountPerToken,
+        depositAmountPart: amountNum * getWeightFraction(t.address),
       }));
   };
 
@@ -158,8 +160,6 @@ export default function ConvertModal({
     const newQuotes: Record<string, { quote: any; expectedOut: number; error?: string }> = {};
 
     const depositPrice = prices[depositToken.address]?.price || 0;
-    const amountPerToken = amountNum / tokenCount;
-    const swapUsdValue = amountPerToken * depositPrice;
 
     for (const swap of requiredSwaps) {
       try {
@@ -167,7 +167,7 @@ export default function ConvertModal({
           throw new Error('Target token decimals missing');
         }
 
-        // Guard against too small split trades
+        const swapUsdValue = swap.depositAmountPart * depositPrice;
         if (swapUsdValue < 1.50) {
           throw new Error('Trade size too small to route (min $1.50 USD)');
         }
@@ -224,13 +224,8 @@ export default function ConvertModal({
     if (amountNum <= 0 || !chosenGroupId || depositToken.decimals === undefined) return;
 
     const depositPrice = prices[depositToken.address]?.price || 0;
-    const amountPerToken = amountNum / tokenCount;
-    const swapUsdValue = amountPerToken * depositPrice;
 
-    // For Demo wallet, if user's balance is insufficient, credit ONLY the difference to avoid over-crediting
-    if (type === 'demo' && humanBalance < amountNum) {
-      addDemoFunds(depositToken.address, amountNum - humanBalance, depositToken.decimals);
-    }
+    // Real wallet check
 
     setExecuting(true);
 
@@ -261,6 +256,7 @@ export default function ConvertModal({
         return;
       }
 
+      const swapUsdValue = swap.depositAmountPart * depositPrice;
       if (swapUsdValue < 1.50) {
         localSteps[i] = { success: false, error: 'Trade size too small to route (min $1.50 USD)' };
         setExecutedSteps({ ...localSteps });
@@ -365,7 +361,7 @@ export default function ConvertModal({
               Add to Basket (Split)
             </h3>
             <p className="text-xs text-slate-400 mt-1">
-              Choose a funding coin and amount. The app will swap it evenly into the basket members (each member gets 1/n of the amount).
+              Choose a funding coin and amount. The app will swap it into the basket members according to their target weights (equal by default).
             </p>
           </div>
           <button
@@ -426,12 +422,7 @@ export default function ConvertModal({
                 })}
               </div>
 
-              {type === 'demo' && (
-                <div className="text-xs bg-slate-950 p-3 rounded-lg border border-slate-800 text-slate-400 flex items-center gap-2 max-w-md">
-                  <Sparkles className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                  <span>Demo Mode: Signing steps are pre-approved. Observe the simulated conversion sequence!</span>
-                </div>
-              )}
+
             </div>
           ) : (
             /* Input State */
@@ -448,7 +439,7 @@ export default function ConvertModal({
                       onClick={() => setDepositToken(token)}
                       className={`flex items-center gap-2.5 p-2.5 rounded-lg border text-left transition-all cursor-pointer ${
                         depositToken.address === token.address
-                          ? 'bg-emerald-500/10 border-emerald-500/40 shadow-sm'
+                           ? 'bg-emerald-500/10 border-emerald-500/40 shadow-sm'
                           : 'bg-slate-950 border-slate-800 hover:bg-slate-900'
                       }`}
                     >
@@ -510,7 +501,7 @@ export default function ConvertModal({
                 </div>
 
                 <div className="text-xs text-slate-400 bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
-                  This will swap your <strong className="text-white">{depositAmount || '0'} {depositToken.symbol}</strong> into the <strong className="text-white">{tokenCount}</strong> basket coins (~{(parseFloat(depositAmount) / tokenCount || 0).toFixed(2)} {depositToken.symbol} each).
+                  This will swap your <strong className="text-white">{depositAmount || '0'} {depositToken.symbol}</strong> into the <strong className="text-white">{tokenCount}</strong> basket coins according to their target weights.
                 </div>
 
                 <div className="space-y-3">
@@ -520,10 +511,10 @@ export default function ConvertModal({
                       <div className="flex items-center gap-2.5">
                         <span className="w-2 h-2 rounded-full bg-emerald-500" />
                         <span className="text-white font-medium text-xs">{depositToken.symbol}</span>
-                        <span className="text-[10px] text-slate-500">({targetPercent.toFixed(1)}% Weight)</span>
+                        <span className="text-[10px] text-slate-500">({(getWeightFraction(depositToken.address) * 100).toFixed(1)}% Weight)</span>
                       </div>
                       <div className="text-right font-mono font-semibold text-white text-xs">
-                        {(parseFloat(depositAmount) / tokenCount || 0).toFixed(4)} {depositToken.symbol}
+                        {(parseFloat(depositAmount) * getWeightFraction(depositToken.address) || 0).toFixed(4)} {depositToken.symbol}
                         <div className="text-[10px] text-slate-500">Retained / No convert required</div>
                       </div>
                     </div>
@@ -537,7 +528,7 @@ export default function ConvertModal({
                         <div className="flex items-center gap-2.5">
                           <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
                           <span className="text-white font-medium text-xs">{swap.targetToken.symbol}</span>
-                          <span className="text-[10px] text-slate-500">({targetPercent.toFixed(1)}% Weight)</span>
+                          <span className="text-[10px] text-slate-500">({(getWeightFraction(swap.targetToken.address) * 100).toFixed(1)}% Weight)</span>
                         </div>
                         <div className="text-right font-mono font-semibold text-xs">
                           {quoteInfo?.error ? (
@@ -559,16 +550,7 @@ export default function ConvertModal({
                 </div>
               </div>
 
-              {type === 'demo' && humanBalance < parseFloat(depositAmount) && (
-                <div className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-lg text-xs text-amber-400 flex gap-2">
-                  <Sparkles className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                  <span>
-                    You are in <strong>Demo Mode</strong>. Your simulated wallet balance is insufficient, but we will auto-credit <strong>+{parseFloat(depositAmount) - humanBalance} {depositToken.symbol}</strong> to your Sandbox wallet so you can complete this conversion split!
-                  </span>
-                </div>
-              )}
-
-              {type !== 'demo' && !localStorage.getItem('roundtrip_has_real_swapped') && (
+              {!localStorage.getItem('roundtrip_has_real_swapped') && (
                 <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg text-xs leading-relaxed animate-in fade-in duration-200">
                   <strong>First live swap:</strong> Confirm your wallet prompt appears and the transaction confirms before continuing.
                 </div>

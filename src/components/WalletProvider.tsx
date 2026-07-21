@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { WalletType } from '../types';
 import { buildSwapTransaction } from '../jupiter';
@@ -24,7 +24,7 @@ interface WalletContextType {
   connecting: boolean;
   balances: Record<string, number>; // mint address -> base units balance
   realOnChainBalances: Record<string, number>; // actual onchain balances without scaling
-  connect: (walletType: 'demo' | 'real') => Promise<void>;
+  connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   refreshBalances: () => Promise<Record<string, number>>;
   signAndExecuteSwap: (params: {
@@ -35,7 +35,6 @@ interface WalletContextType {
     inputDecimals: number;
     outputDecimals: number;
   }) => Promise<string>;
-  addDemoFunds: (mint: string, amountHuman: number, decimals: number) => void;
   rpcUrl: string;
   setRpcUrl: (url: string) => void;
   slippageBps: number;
@@ -43,20 +42,6 @@ interface WalletContextType {
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
-
-// Initial Demo balances stored in localStorage
-const DEFAULT_DEMO_BALANCES: Record<string, number> = {
-  // SOL (9 decimals): 12.5 SOL
-  'So11111111111111111111111111111111111111112': 12.5 * 1e9,
-  // USDC (6 decimals): 2500 USDC
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 2500 * 1e6,
-  // USDT (6 decimals): 500 USDT
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 500 * 1e6,
-  // JUP (6 decimals): 1200 JUP
-  'JUPyiwrYJFskUPiFG4gpvXvjTE76SreV8NToA8Y5YyJ': 1200 * 1e6,
-  // BONK (5 decimals): 15,000,000 BONK
-  'DezXAZ8z7PnrFcPykJzn99s94ChKnmk699rCgHmzUM6y': 15000000 * 1e5,
-};
 
 const WalletInnerProvider: React.FC<{
   children: React.ReactNode;
@@ -68,197 +53,141 @@ const WalletInnerProvider: React.FC<{
   const baseWallet = useWallet();
   const walletModal = useWalletModal();
 
-  // Sandbox/demo mode state
-  const [isDemo, setIsDemo] = useState<boolean>(() => {
-    return localStorage.getItem('roundtrip_demo_active') === 'true';
-  });
-
-  const [demoBalances, setDemoBalances] = useState<Record<string, number>>(() => {
-    const saved = localStorage.getItem('roundtrip_demo_balances');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        // ignore
-      }
-    }
-    return DEFAULT_DEMO_BALANCES;
-  });
-
-  const demoBalancesRef = useRef<Record<string, number>>(demoBalances);
+  // One-time cleanup of lingering demo keys from localStorage
   useEffect(() => {
-    demoBalancesRef.current = demoBalances;
-  }, [demoBalances]);
+    localStorage.removeItem('roundtrip_demo_active');
+    localStorage.removeItem('roundtrip_demo_balances');
+  }, []);
 
   // Track real on-chain balances fetched from RPC
   const [onChainBalances, setOnChainBalances] = useState<Record<string, number>>({});
 
-  // Sync demo state changes to storage
-  useEffect(() => {
-    localStorage.setItem('roundtrip_demo_active', isDemo ? 'true' : 'false');
-  }, [isDemo]);
-
-  // If real wallet connects, we turn off demo mode
-  useEffect(() => {
-    if (baseWallet.connected) {
-      setIsDemo(false);
-    }
-  }, [baseWallet.connected]);
-
-  // Map state
-  const connected = isDemo ? true : baseWallet.connected;
-  const publicKeyStr = isDemo
-    ? 'DemoRebalancerWa11etAddressSolana11111111'
-    : baseWallet.publicKey?.toBase58() || null;
-  const connecting = isDemo ? false : baseWallet.connecting;
+  // Map state directly to real wallet status
+  const connected = baseWallet.connected;
+  const publicKeyStr = baseWallet.publicKey?.toBase58() || null;
+  const connecting = baseWallet.connecting;
   
   const walletType = useMemo<WalletType>(() => {
-    if (isDemo) return 'demo';
     if (!baseWallet.connected) return null;
     const name = baseWallet.wallet?.adapter.name.toLowerCase() || '';
     if (name.includes('phantom')) return 'phantom';
     if (name.includes('solflare')) return 'solflare';
     if (name.includes('backpack')) return 'backpack';
     return 'phantom'; // fallback/standard
-  }, [isDemo, baseWallet.connected, baseWallet.wallet]);
+  }, [baseWallet.connected, baseWallet.wallet]);
 
   // Fetch real onchain balances for real wallets
   const refreshBalances = useCallback(async (): Promise<Record<string, number>> => {
     if (!connected || !publicKeyStr) return {};
 
-    if (isDemo) {
-      // Refreshing demo balances from state/storage
-      let finalRaw = DEFAULT_DEMO_BALANCES;
-      const savedBalances = localStorage.getItem('roundtrip_demo_balances');
-      if (savedBalances) {
+    const publicEndpoints = [
+      'https://api.mainnet-beta.solana.com',
+      'https://rpc.ankr.com/solana',
+      'https://solana.public-rpc.com',
+      'https://api.turing.solana.com'
+    ];
+
+    // Order URLs to try: current RPC first, then others
+    const urlsToTry = [rpcUrl];
+    if (publicEndpoints.includes(rpcUrl)) {
+      for (const endpoint of publicEndpoints) {
+        if (endpoint !== rpcUrl) {
+          urlsToTry.push(endpoint);
+        }
+      }
+    }
+
+    let lastError: any = null;
+
+    for (const url of urlsToTry) {
+      try {
+        const connection = new Connection(url, 'confirmed');
+        const pubkey = new PublicKey(publicKeyStr);
+        const newBalances: Record<string, number> = {};
+
+        // 1. Fetch SOL Balance
+        const solBalance = await connection.getBalance(pubkey);
+        // Map SOL to standard WSOL mint
+        newBalances['So11111111111111111111111111111111111111112'] = solBalance;
+
+        // 2. Fetch SPL token accounts
         try {
-          finalRaw = JSON.parse(savedBalances);
-        } catch (e) {
-          // fallback
+          const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, {
+            programId: TOKEN_PROGRAM_ID,
+          });
+
+          for (const account of tokenAccounts.value) {
+            const info = account.account.data.parsed.info;
+            const mint = info.mint;
+            const amount = parseInt(info.tokenAmount.amount);
+            newBalances[mint] = (newBalances[mint] || 0) + amount;
+          }
+        } catch (err) {
+          console.warn(`Failed to fetch legacy SPL token accounts on ${url}:`, err);
         }
-      }
-      setDemoBalances((current) => {
-        const keys1 = Object.keys(finalRaw);
-        const keys2 = Object.keys(current);
-        if (keys1.length !== keys2.length) return finalRaw;
-        for (const k of keys1) {
-          if (finalRaw[k] !== current[k]) return finalRaw;
+
+        // 3. Fetch Token-2022 accounts
+        try {
+          const token2022Accounts = await connection.getParsedTokenAccountsByOwner(pubkey, {
+            programId: TOKEN_2022_PROGRAM_ID,
+          });
+
+          for (const account of token2022Accounts.value) {
+            const info = account.account.data.parsed.info;
+            const mint = info.mint;
+            const amount = parseInt(info.tokenAmount.amount);
+            newBalances[mint] = (newBalances[mint] || 0) + amount;
+          }
+        } catch (err) {
+          console.warn(`Failed to fetch Token-2022 accounts on ${url}:`, err);
         }
-        return current;
-      });
-      return finalRaw;
-    }
 
-    // Real Web3 Fetch
-    try {
-      const connection = new Connection(rpcUrl, 'confirmed');
-      const pubkey = new PublicKey(publicKeyStr);
-      const newBalances: Record<string, number> = {};
-
-      // 1. Fetch SOL Balance
-      const solBalance = await connection.getBalance(pubkey);
-      // Map SOL to standard WSOL mint
-      newBalances['So11111111111111111111111111111111111111112'] = solBalance;
-
-      // 2. Fetch SPL token accounts
-      try {
-        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, {
-          programId: TOKEN_PROGRAM_ID,
+        setOnChainBalances((current) => {
+          const keys1 = Object.keys(newBalances);
+          const keys2 = Object.keys(current);
+          if (keys1.length !== keys2.length) return newBalances;
+          for (const k of keys1) {
+            if (newBalances[k] !== current[k]) return newBalances;
+          }
+          return current;
         });
 
-        for (const account of tokenAccounts.value) {
-          const info = account.account.data.parsed.info;
-          const mint = info.mint;
-          const amount = parseInt(info.tokenAmount.amount);
-          newBalances[mint] = (newBalances[mint] || 0) + amount;
+        // If we switched to a fallback URL and it worked, auto-update the context RPC url
+        if (url !== rpcUrl) {
+          console.log(`Auto-switched to working RPC endpoint: ${url}`);
+          setRpcUrl(url);
         }
+
+        return newBalances;
       } catch (err) {
-        console.warn('Failed to fetch legacy SPL token accounts:', err);
+        console.warn(`Failed to fetch real wallet balances on RPC ${url}:`, err);
+        lastError = err;
       }
-
-      // 3. Fetch Token-2022 accounts
-      try {
-        const token2022Accounts = await connection.getParsedTokenAccountsByOwner(pubkey, {
-          programId: TOKEN_2022_PROGRAM_ID,
-        });
-
-        for (const account of token2022Accounts.value) {
-          const info = account.account.data.parsed.info;
-          const mint = info.mint;
-          const amount = parseInt(info.tokenAmount.amount);
-          newBalances[mint] = (newBalances[mint] || 0) + amount;
-        }
-      } catch (err) {
-        console.warn('Failed to fetch Token-2022 accounts:', err);
-      }
-
-      setOnChainBalances((current) => {
-        const keys1 = Object.keys(newBalances);
-        const keys2 = Object.keys(current);
-        if (keys1.length !== keys2.length) return newBalances;
-        for (const k of keys1) {
-          if (newBalances[k] !== current[k]) return newBalances;
-        }
-        return current;
-      });
-      return newBalances;
-    } catch (err) {
-      console.error('Failed to fetch real wallet balances:', err);
-      return {};
     }
-  }, [connected, publicKeyStr, isDemo, rpcUrl]);
+
+    console.error('All attempted RPC endpoints failed to fetch real wallet balances:', lastError);
+    return {};
+  }, [connected, publicKeyStr, rpcUrl, setRpcUrl]);
 
   // Auto-refresh balances on load/connect
   useEffect(() => {
     if (connected) {
       refreshBalances();
     }
-  }, [connected, publicKeyStr, isDemo, refreshBalances]);
+  }, [connected, publicKeyStr, refreshBalances]);
 
-  // Calculate scaled balances actually presented to the app
-  const balances = useMemo(() => {
-    return isDemo ? demoBalances : onChainBalances;
-  }, [isDemo, demoBalances, onChainBalances]);
-
-  const realOnChainBalances = useMemo(() => {
-    return isDemo ? demoBalances : onChainBalances;
-  }, [isDemo, demoBalances, onChainBalances]);
+  // Derived values for the app
+  const balances = onChainBalances;
+  const realOnChainBalances = onChainBalances;
 
   // Connect wallet
-  const connect = async (walletType: 'demo' | 'real') => {
-    if (walletType === 'demo') {
-      setIsDemo(true);
-      if (baseWallet.connected) {
-        await baseWallet.disconnect();
-      }
-    } else {
-      setIsDemo(false);
-      walletModal.setVisible(true);
-    }
+  const connect = async () => {
+    walletModal.setVisible(true);
   };
 
   // Disconnect wallet
   const disconnect = async () => {
-    if (isDemo) {
-      setIsDemo(false);
-    } else {
-      await baseWallet.disconnect();
-    }
-  };
-
-  // Add demo funds helper
-  const addDemoFunds = (mint: string, amountHuman: number, decimals: number) => {
-    if (!isDemo) return;
-
-    const baseAmount = amountHuman * Math.pow(10, decimals);
-
-    const updatedBalances = {
-      ...demoBalances,
-      [mint]: (demoBalances[mint] || 0) + baseAmount,
-    };
-
-    localStorage.setItem('roundtrip_demo_balances', JSON.stringify(updatedBalances));
-    setDemoBalances(updatedBalances);
+    await baseWallet.disconnect();
   };
 
   // Sign and Execute swap transaction
@@ -270,44 +199,13 @@ const WalletInnerProvider: React.FC<{
     inputDecimals: number;
     outputDecimals: number;
   }): Promise<string> => {
-    const { inputMint, outputMint, amountBase, quoteResponse } = params;
+    const { publicKeyStr: _un, quoteResponse } = { publicKeyStr, ...params };
 
     if (!connected || !publicKeyStr) {
       throw new Error('Wallet not connected');
     }
 
-    // 1. DEMO SWAP SIMULATION
-    if (isDemo) {
-      return new Promise((resolve, reject) => {
-        setTimeout(() => {
-          try {
-            const current = demoBalancesRef.current;
-            const rawAmountIn = amountBase;
-            const currentRawInBalance = current[inputMint] || 0;
-            const rawAmountOut = parseInt(quoteResponse.outAmount || '0');
-
-            if (currentRawInBalance < rawAmountIn) {
-              throw new Error(`Insufficient simulated balance. Swap rejected.`);
-            }
-
-            const updatedBalances = { ...current };
-            updatedBalances[inputMint] = Math.max(0, currentRawInBalance - rawAmountIn);
-            updatedBalances[outputMint] = (updatedBalances[outputMint] || 0) + rawAmountOut;
-
-            demoBalancesRef.current = updatedBalances;
-            localStorage.setItem('roundtrip_demo_balances', JSON.stringify(updatedBalances));
-            setDemoBalances(updatedBalances);
-
-            const mockTxId = 'SimulatedSwapTxId' + Math.random().toString(36).substring(2, 15) + 'Confirmed';
-            resolve(mockTxId);
-          } catch (err) {
-            reject(err);
-          }
-        }, 1500);
-      });
-    }
-
-    // 2. REAL WEB3 WALLET SWAP
+    // REAL WEB3 WALLET SWAP
     try {
       if (!baseWallet.signTransaction) {
         throw new Error('Connected wallet does not support signing transactions.');
@@ -346,7 +244,7 @@ const WalletInnerProvider: React.FC<{
         maxRetries: 3,
       });
 
-      // Confirm transaction using tx's own blockhash and swapRes's lastValidBlockHeight (C1)
+      // Confirm transaction using tx's own blockhash and swapRes's lastValidBlockHeight
       const txBlockhash = transaction.message.recentBlockhash;
       const jupLastValidBlockHeight = swapRes.lastValidBlockHeight;
 
@@ -368,7 +266,7 @@ const WalletInnerProvider: React.FC<{
       } catch (confirmErr) {
         console.warn('confirmTransaction failed or timed out, polling getSignatureStatus for', txId, confirmErr);
         let landed = false;
-        // Poll for up to 15 seconds (10 attempts * 1.5s) (C1)
+        // Poll for up to 15 seconds (10 attempts * 1.5s)
         for (let i = 0; i < 10; i++) {
           try {
             const statusRes = await connection.getSignatureStatus(txId);
@@ -419,7 +317,6 @@ const WalletInnerProvider: React.FC<{
         disconnect,
         refreshBalances,
         signAndExecuteSwap,
-        addDemoFunds,
         rpcUrl,
         setRpcUrl,
         slippageBps,

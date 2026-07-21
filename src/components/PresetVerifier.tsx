@@ -34,7 +34,6 @@ export default function PresetVerifier({ preset, groups, onApply, onCancel }: Pr
     async function runVerification() {
       setLoading(true);
       
-      const isSandbox = localStorage.getItem('roundtrip_demo_active') === 'true';
       const allowManualTrust = localStorage.getItem('roundtrip_manual_trust') === 'true';
 
       // Initialize states
@@ -56,11 +55,11 @@ export default function PresetVerifier({ preset, groups, onApply, onCancel }: Pr
           let resolvedToken: Token | null = null;
           let isOverridden = false;
 
-          // Attempt real verification first even in sandbox to get accurate decimals & metadata
+          // Attempt real verification first to get accurate decimals & metadata
           resolvedToken = await verifyJupiterToken(t.expectedMint);
 
           if (!resolvedToken) {
-            if (isSandbox || allowManualTrust) {
+            if (allowManualTrust) {
               // Resolve decimals accurately based on known preset tokens
               let decimals = 9; // fallback
               const sym = t.symbol.toUpperCase();
@@ -80,12 +79,10 @@ export default function PresetVerifier({ preset, groups, onApply, onCancel }: Pr
               resolvedToken = {
                 address: t.expectedMint,
                 symbol: t.symbol,
-                name: isSandbox ? t.symbol : `${t.symbol} (Trusted)`,
+                name: `${t.symbol} (Trusted)`,
                 decimals,
               };
-              if (!isSandbox) {
-                isOverridden = true;
-              }
+              isOverridden = true;
             }
           }
 
@@ -396,7 +393,7 @@ export default function PresetVerifier({ preset, groups, onApply, onCancel }: Pr
                   ))}
                 </ul>
                 <p className="text-[11px] text-slate-400 mt-1 italic leading-relaxed">
-                  Low-liquidity assets might cause higher slippage on larger swaps. You can still proceed with paper testing (sandbox) or connect with small amounts.
+                  Low-liquidity assets might cause higher slippage on larger swaps. Trade with caution and consider smaller swap sizes.
                 </p>
               </div>
             </div>

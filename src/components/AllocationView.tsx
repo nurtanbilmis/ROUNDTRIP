@@ -19,7 +19,8 @@ import {
   Calendar, 
   Award,
   Sparkles,
-  Edit2
+  Edit2,
+  Settings
 } from 'lucide-react';
 import { Token, TokenBalance, RebalanceSwap, LinkGroup, getGroupColorClasses, formatPrice, COIN_LINE_COLORS } from '../types';
 import { useSolanaWallet } from './WalletProvider';
@@ -107,6 +108,57 @@ export default function AllocationView({
   // States for membership editing and warnings
   const [confirmRemoveMint, setConfirmRemoveMint] = useState<string | null>(null);
   const [showInlineAddPicker, setShowInlineAddPicker] = useState(false);
+
+  // Local state for target weights as percentages (0 to 100)
+  const [tempWeights, setTempWeights] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    const initialWeights: Record<string, number> = {};
+    group.memberMints.forEach((mint) => {
+      const weightFraction = (group.targetWeights && group.targetWeights[mint] !== undefined)
+        ? group.targetWeights[mint]
+        : (group.memberMints.length > 0 ? 1 / group.memberMints.length : 0);
+      initialWeights[mint] = Number((weightFraction * 100).toFixed(1));
+    });
+    setTempWeights(initialWeights);
+  }, [group.id, group.memberMints]);
+
+  const handleWeightChange = (mint: string, valPercent: number) => {
+    setTempWeights((prev) => ({
+      ...prev,
+      [mint]: valPercent,
+    }));
+  };
+
+  const handleNormalize = () => {
+    const sum = Object.keys(tempWeights).reduce((sum, mint) => sum + (tempWeights[mint] || 0), 0);
+    if (sum === 0) return;
+    const normalized: Record<string, number> = {};
+    Object.keys(tempWeights).forEach((mint) => {
+      normalized[mint] = Number((((tempWeights[mint] || 0) / sum) * 100).toFixed(1));
+    });
+    setTempWeights(normalized);
+  };
+
+  const handleResetToEqual = () => {
+    const equalVal = group.memberMints.length > 0 ? 100 / group.memberMints.length : 0;
+    const reset: Record<string, number> = {};
+    group.memberMints.forEach((mint) => {
+      reset[mint] = Number(equalVal.toFixed(1));
+    });
+    setTempWeights(reset);
+  };
+
+  const handleSaveWeights = () => {
+    const finalTargetWeights: Record<string, number> = {};
+    Object.keys(tempWeights).forEach((mint) => {
+      finalTargetWeights[mint] = tempWeights[mint] / 100;
+    });
+    onUpdateGroup({
+      ...group,
+      targetWeights: finalTargetWeights,
+    });
+  };
   const [verifiedTokens, setVerifiedTokens] = useState<Token[]>([]);
   const [loadingVerifiedTokens, setLoadingVerifiedTokens] = useState(false);
   const [addCoinSearchQuery, setAddCoinSearchQuery] = useState('');
@@ -236,7 +288,6 @@ export default function AllocationView({
 
     const calculatedTokens = list.filter((item) => !item.isDecimalsUnknown);
     const totalGroupUsd = calculatedTokens.reduce((sum, item) => sum + item.usdValue, 0);
-    const targetWeight = calculatedTokens.length > 0 ? 100 / calculatedTokens.length : 0;
 
     return list.map((item) => {
       if (item.isDecimalsUnknown) {
@@ -248,6 +299,10 @@ export default function AllocationView({
         };
       }
       const currentWeight = totalGroupUsd > 0 ? (item.usdValue / totalGroupUsd) * 100 : 0;
+      const weightFraction = (group.targetWeights && group.targetWeights[item.mint] !== undefined)
+        ? group.targetWeights[item.mint]
+        : (calculatedTokens.length > 0 ? 1 / calculatedTokens.length : 0);
+      const targetWeight = weightFraction * 100;
       const drift = currentWeight - targetWeight;
       return {
         ...item,
@@ -271,6 +326,10 @@ export default function AllocationView({
   // Rebalance is available if there is at least one coin and we have some value
   const rebalanceAvailable = groupBalances.length > 1 && totalUsdValue > 0;
 
+  const targetWeightsSum = groupBalances.reduce((sum, item) => sum + item.targetWeight, 0);
+  const isTargetWeightsSumValid = groupBalances.length === 0 || Math.abs(targetWeightsSum - 100) < 0.15;
+  const tempWeightsSum = Object.keys(tempWeights).reduce((sum, mint) => sum + (tempWeights[mint] || 0), 0);
+
   // Crash Warnings
   const crashWarnings = groupBalances.filter((item) => {
     return item.amountHuman > 0 && (item.change24h || 0) <= CRASH_THRESHOLD_24H;
@@ -287,10 +346,12 @@ export default function AllocationView({
 
     const calculatedTokens = activeMembers;
     const activeTotalUsd = calculatedTokens.reduce((sum, item) => sum + item.usdValue, 0);
-    const targetWeight = 100 / calculatedTokens.length;
 
     for (const item of calculatedTokens) {
-      const targetUsd = (targetWeight / 100) * activeTotalUsd;
+      const weightFraction = (group.targetWeights && group.targetWeights[item.mint] !== undefined)
+        ? group.targetWeights[item.mint]
+        : (calculatedTokens.length > 0 ? 1 / calculatedTokens.length : 0);
+      const targetUsd = weightFraction * activeTotalUsd;
       const differenceUsd = item.usdValue - targetUsd;
 
       if (differenceUsd > 0) {
@@ -442,17 +503,17 @@ export default function AllocationView({
     const driftStr = `${drift.toFixed(1)}%`;
 
     if (drift < 1.0) {
-      return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - likely not worth it due to minimal variance.`;
+      return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage, likely not worth it due to minimal variance.`;
     } else if (drift < 5.0) {
       if (cost > 0.50) {
-        return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - likely not worth it due to high transaction costs.`;
+        return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage, likely not worth it due to high transaction costs.`;
       }
-      return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - roughly break-even, may be performed for precision.`;
+      return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage: roughly break-even, may be performed for precision.`;
     } else {
       if (cost > 2.00) {
-        return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - high fee impact, but recommended to restore target weights.`;
+        return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage: high fee impact, but recommended to restore target weights.`;
       }
-      return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage - highly efficient, recommended to restore target weights.`;
+      return `Correcting ~${driftStr} drift would cost ~${costStr} in fees/slippage: highly efficient, recommended to restore target weights.`;
     }
   };
 
@@ -776,7 +837,7 @@ export default function AllocationView({
               !rebalanceAvailable
                 ? 'Link at least 2 coins with balance to enable rebalance'
                 : currentSwaps.length === 0
-                ? 'Already balanced — no trades needed.'
+                ? 'Already balanced, no trades needed.'
                 : 'Trade between members to restore equal weight'
             }
           >
@@ -842,8 +903,54 @@ export default function AllocationView({
               </button>
             </div>
 
+            {/* Custom Target Weights Control Bar */}
+            {groupBalances.length > 0 && (
+              <div className="bg-slate-950/60 border border-slate-850 rounded-xl p-4 mb-4 space-y-3">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                  <div className="space-y-0.5">
+                    <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <Settings className="w-3.5 h-3.5 text-slate-400" />
+                      Custom Target Weights Configuration
+                    </span>
+                    <p className="text-[10px] text-slate-500">
+                      Customize targets per coin, then save. Default is equal-weighted.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 self-stretch sm:self-auto justify-end">
+                    <button
+                      onClick={handleResetToEqual}
+                      className="bg-slate-900 hover:bg-slate-800 border border-slate-805 text-slate-300 px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-all"
+                    >
+                      Reset to Equal
+                    </button>
+                    <button
+                      onClick={handleNormalize}
+                      className="bg-slate-900 hover:bg-slate-800 border border-slate-805 text-slate-300 px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-all"
+                    >
+                      Normalize to 100%
+                    </button>
+                    <button
+                      onClick={handleSaveWeights}
+                      disabled={Math.abs(tempWeightsSum - 100) > 0.15}
+                      className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-3 py-1 rounded-lg text-[10px] font-black cursor-pointer transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Save Weights
+                    </button>
+                  </div>
+                </div>
+
+                {/* Status Indicator */}
+                <div className="flex justify-between items-center text-[10px] font-mono font-bold border-t border-slate-900 pt-2 text-slate-400">
+                  <span>Current Target Weights Sum:</span>
+                  <span className={Math.abs(tempWeightsSum - 100) < 0.15 ? 'text-emerald-400' : 'text-amber-500'}>
+                    {tempWeightsSum.toFixed(1)}% {Math.abs(tempWeightsSum - 100) < 0.15 ? '✓ (Valid)' : '⚠️ (Must equal 100%)'}
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Weights List */}
-            <div className="py-4 space-y-5">
+            <div className="py-2 space-y-5">
               {groupBalances.length === 0 ? (
                 <div className="text-center py-10 text-slate-500 text-sm">
                   This link-group is empty. Use the Add Coin button below to populate it.
@@ -857,8 +964,8 @@ export default function AllocationView({
 
                   return (
                     <div key={item.mint} className="space-y-2">
-                      <div className="flex justify-between items-end">
-                        <div className="flex items-center gap-2.5">
+                      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2.5">
                           <div 
                             className="w-2.5 h-2.5 rounded-full shrink-0" 
                             style={{ backgroundColor: COIN_LINE_COLORS[group.memberMints.indexOf(item.mint) % COIN_LINE_COLORS.length] || '#475569' }}
@@ -871,6 +978,23 @@ export default function AllocationView({
                               `${item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })} units`
                             )}
                           </span>
+
+                          {/* Inline Target Weight Input */}
+                          {!isUnknown && (
+                            <div className="flex items-center gap-1.5 ml-2">
+                              <span className="text-[10px] text-slate-500 font-bold uppercase font-mono">Target:</span>
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.1"
+                                value={tempWeights[item.mint] !== undefined ? tempWeights[item.mint] : ''}
+                                onChange={(e) => handleWeightChange(item.mint, parseFloat(e.target.value) || 0)}
+                                className="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 w-14 text-right text-xs text-white font-mono font-bold focus:outline-none focus:border-emerald-500"
+                              />
+                              <span className="text-[10px] text-slate-500 font-bold">%</span>
+                            </div>
+                          )}
 
                           {/* Inline Remove Control */}
                           {confirmRemoveMint === item.mint ? (
@@ -929,20 +1053,20 @@ export default function AllocationView({
                             {!isOver && (
                               <div 
                                 className="h-full bg-sky-500/20 border-r border-sky-400/40 transition-all"
-                                style={{ width: `${Math.min(100, (absDrift / targetPercent) * 100)}%` }}
+                                style={{ width: `${Math.min(100, (absDrift / item.targetWeight) * 100)}%` }}
                               />
                             )}
                           </div>
                           {/* Divider Line representing exact Target Weight */}
                           <div className="absolute left-1/2 top-0 bottom-0 w-0.5 bg-slate-700 z-10 flex items-center justify-center">
-                            <span className="absolute text-[8px] font-mono text-slate-500 -top-3.5">TARGET</span>
+                            <span className="absolute text-[8px] font-mono text-slate-500 -top-3.5">TARGET ({item.targetWeight.toFixed(1)}%)</span>
                           </div>
                           {/* Overweight fill (right side of target) */}
                           <div className="w-1/2 h-full flex justify-start items-center bg-slate-950/40 relative">
                             {isOver && (
                               <div 
                                 className="h-full bg-emerald-500/20 border-l border-emerald-400/40 transition-all"
-                                style={{ width: `${Math.min(100, (absDrift / targetPercent) * 100)}%` }}
+                                style={{ width: `${Math.min(100, (absDrift / item.targetWeight) * 100)}%` }}
                               />
                             )}
                           </div>
@@ -1149,7 +1273,22 @@ export default function AllocationView({
           {/* Rebalance Advisory Trades Container */}
           {rebalanceAvailable && (
             <div className={`bg-slate-900 border ${groupColors.border} rounded-2xl p-6 shadow-xl space-y-4`}>
-              {(!rebalanceInitiated && !previewActive) ? (
+              {!isTargetWeightsSumValid ? (
+                <div className="text-center py-6 space-y-4 animate-in fade-in duration-200">
+                  <div className="mx-auto w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-500">
+                    <AlertTriangle className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-extrabold text-white">Rebalance Gated</h4>
+                    <p className="text-xs text-slate-400 max-w-md mx-auto">
+                      Your custom target weights sum to <strong className="text-white">{targetWeightsSum.toFixed(1)}%</strong>. They must sum to exactly 100% to enable equal-weight or custom rebalancing.
+                    </p>
+                  </div>
+                  <div className="p-3 bg-amber-950/20 border border-amber-900/40 rounded-xl max-w-sm mx-auto text-[11px] text-slate-300">
+                    Use the <strong>Custom Target Weights Configuration</strong> panel above and click <strong>Normalize to 100%</strong> followed by <strong>Save Weights</strong> to fix this!
+                  </div>
+                </div>
+              ) : (!rebalanceInitiated && !previewActive) ? (
                 // NORMAL CLOSED STATES
                 currentSwaps.length === 0 ? (
                   <div className="text-center py-6 space-y-3 animate-in fade-in duration-200">
@@ -1414,7 +1553,7 @@ export default function AllocationView({
 
                   {/* Execution Block */}
                   <div className="bg-slate-950 rounded-xl border border-slate-850 p-4 space-y-4">
-                    {type !== 'demo' && !localStorage.getItem('roundtrip_has_real_swapped') && (
+                    {!localStorage.getItem('roundtrip_has_real_swapped') && (
                       <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg text-xs leading-relaxed animate-in fade-in duration-200">
                         <strong>First live swap:</strong> Confirm your wallet prompt appears and the transaction confirms before continuing.
                       </div>
@@ -1426,11 +1565,6 @@ export default function AllocationView({
                           : `Execution requires signing selected consecutive swap transactions. No assets ever leave your own wallet.`
                         }
                       </p>
-                      {type === 'demo' && (
-                        <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded-md border border-emerald-500/20 font-bold">
-                          SIMULATED SANDBOX WALLET
-                        </span>
-                      )}
                     </div>
 
                     {rebalancing && (
