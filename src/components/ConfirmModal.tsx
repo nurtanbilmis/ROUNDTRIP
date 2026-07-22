@@ -8,6 +8,8 @@ interface ConfirmModalProps {
   onCancel: () => void;
   confirmText?: string;
   cancelText?: string;
+  isScary?: boolean;
+  badgeText?: string;
 }
 
 export default function ConfirmModal({
@@ -17,7 +19,9 @@ export default function ConfirmModal({
   onConfirm,
   onCancel,
   confirmText = "LFG (Yes)",
-  cancelText = "Abort (No)"
+  cancelText = "Abort (No)",
+  isScary = false,
+  badgeText
 }: ConfirmModalProps) {
   if (!isOpen) return null;
 
@@ -30,14 +34,14 @@ export default function ConfirmModal({
       />
       
       {/* Modal Box */}
-      <div className="relative bg-slate-900 border-4 border-slate-700 p-6 rounded-3xl max-w-md w-full shadow-[8px_8px_0px_0px_rgba(0,0,0,0.5)] transform rotate-[-0.5deg] animate-in scale-in duration-200">
+      <div className={`relative bg-slate-900 border-4 ${isScary ? 'border-rose-600' : 'border-slate-700'} p-6 rounded-3xl max-w-md w-full shadow-[8px_8px_0px_0px_rgba(0,0,0,0.5)] transform rotate-[-0.5deg] animate-in scale-in duration-200`}>
         {/* Cartoon styled badge */}
-        <div className="absolute -top-4 -left-3 bg-rose-500 text-slate-950 px-3 py-1 font-display font-extrabold text-xs uppercase border-2 border-slate-950 rounded-lg shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] rotate-[-4deg]">
-          🚨 ATTENTION
+        <div className={`absolute -top-4 -left-3 ${isScary ? 'bg-rose-600 text-white' : 'bg-rose-500 text-slate-950'} px-3 py-1 font-display font-extrabold text-xs uppercase border-2 border-slate-950 rounded-lg shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] rotate-[-4deg]`}>
+          {badgeText || (isScary ? '🔥 BURN WARNING' : '🚨 ATTENTION')}
         </div>
 
         <div className="space-y-4 mt-2">
-          <h3 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
+          <h3 className={`text-xl font-black ${isScary ? 'text-rose-400' : 'text-white'} tracking-tight flex items-center gap-2`}>
             {title}
           </h3>
           
@@ -48,7 +52,11 @@ export default function ConfirmModal({
           <div className="flex gap-3 pt-2">
             <button
               onClick={onConfirm}
-              className="comic-btn flex-1 bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-display font-extrabold py-3 px-4 rounded-xl text-sm border-2 border-emerald-800 shadow-[4px_4px_0px_0px_#064e3b] hover:translate-y-[-1px] hover:shadow-[5px_5px_0px_0px_#064e3b] active:translate-y-[1px] active:shadow-[2px_2px_0px_0px_#064e3b] transition-all cursor-pointer"
+              className={`comic-btn flex-1 ${
+                isScary
+                  ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-950 shadow-[4px_4px_0px_0px_#881337]'
+                  : 'bg-emerald-500 hover:bg-emerald-450 text-slate-950 border-emerald-800 shadow-[4px_4px_0px_0px_#064e3b]'
+              } font-display font-extrabold py-3 px-4 rounded-xl text-sm border-2 hover:translate-y-[-1px] active:translate-y-[1px] transition-all cursor-pointer`}
             >
               {confirmText}
             </button>
