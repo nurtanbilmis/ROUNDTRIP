@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { Connection, PublicKey, VersionedTransaction, Transaction } from '@solana/web3.js';
 import { WalletType } from '../types';
-import { buildSwapTransaction } from '../jupiter';
+import { buildSwapTransaction, fetchQuote } from '../jupiter';
 import {
   ConnectionProvider,
   WalletProvider as SolanaBaseWalletProvider,
@@ -15,7 +15,12 @@ import {
 // Import Solana Wallet Adapter CSS
 import '@solana/wallet-adapter-react-ui/styles.css';
 
-import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
+import {
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  createCloseAccountInstruction,
+  createBurnInstruction,
+} from '@solana/spl-token';
 
 interface WalletContextType {
   publicKey: string | null;
@@ -24,6 +29,9 @@ interface WalletContextType {
   connecting: boolean;
   balances: Record<string, number>; // mint address -> base units balance
   realOnChainBalances: Record<string, number>; // actual onchain balances without scaling
+  tokenAccountLamports: Record<string, number>;
+  getRentSol: (mint: string) => number;
+  getRentSolString: (mint: string) => string;
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   refreshBalances: () => Promise<Record<string, number>>;
@@ -35,6 +43,8 @@ interface WalletContextType {
     inputDecimals: number;
     outputDecimals: number;
   }) => Promise<string>;
+  closeEmptyAccount: (mint: string) => Promise<string>;
+  convertToSol: (mint: string, inputDecimals: number) => Promise<{ action: 'swap' | 'burn'; txId: string }>;
   rpcUrl: string;
   setRpcUrl: (url: string) => void;
   slippageBps: number;
@@ -61,6 +71,7 @@ const WalletInnerProvider: React.FC<{
 
   // Track real on-chain balances fetched from RPC
   const [onChainBalances, setOnChainBalances] = useState<Record<string, number>>({});
+  const [tokenAccountLamports, setTokenAccountLamports] = useState<Record<string, number>>({});
 
   // Map state directly to real wallet status
   const connected = baseWallet.connected;
@@ -75,6 +86,19 @@ const WalletInnerProvider: React.FC<{
     if (name.includes('backpack')) return 'backpack';
     return 'phantom'; // fallback/standard
   }, [baseWallet.connected, baseWallet.wallet]);
+
+  const getRentSol = useCallback((mint: string): number => {
+    const lamports = tokenAccountLamports[mint];
+    if (lamports && lamports > 0) {
+      return lamports / 1e9;
+    }
+    return 0.00204;
+  }, [tokenAccountLamports]);
+
+  const getRentSolString = useCallback((mint: string): string => {
+    const rentSol = getRentSol(mint);
+    return rentSol.toLocaleString(undefined, { minimumFractionDigits: 5, maximumFractionDigits: 5 });
+  }, [getRentSol]);
 
   // Fetch real onchain balances for real wallets
   const refreshBalances = useCallback(async (): Promise<Record<string, number>> => {
@@ -104,6 +128,7 @@ const WalletInnerProvider: React.FC<{
         const connection = new Connection(url, 'confirmed');
         const pubkey = new PublicKey(publicKeyStr);
         const newBalances: Record<string, number> = {};
+        const newLamports: Record<string, number> = {};
 
         // 1. Fetch SOL Balance
         const solBalance = await connection.getBalance(pubkey);
@@ -119,8 +144,9 @@ const WalletInnerProvider: React.FC<{
           for (const account of tokenAccounts.value) {
             const info = account.account.data.parsed.info;
             const mint = info.mint;
-            const amount = parseInt(info.tokenAmount.amount);
+            const amount = parseInt(info.tokenAmount.amount, 10);
             newBalances[mint] = (newBalances[mint] || 0) + amount;
+            newLamports[mint] = account.account.lamports;
           }
         } catch (err) {
           console.warn(`Failed to fetch legacy SPL token accounts on ${url}:`, err);
@@ -135,8 +161,9 @@ const WalletInnerProvider: React.FC<{
           for (const account of token2022Accounts.value) {
             const info = account.account.data.parsed.info;
             const mint = info.mint;
-            const amount = parseInt(info.tokenAmount.amount);
+            const amount = parseInt(info.tokenAmount.amount, 10);
             newBalances[mint] = (newBalances[mint] || 0) + amount;
+            newLamports[mint] = account.account.lamports;
           }
         } catch (err) {
           console.warn(`Failed to fetch Token-2022 accounts on ${url}:`, err);
@@ -151,6 +178,8 @@ const WalletInnerProvider: React.FC<{
           }
           return current;
         });
+
+        setTokenAccountLamports(newLamports);
 
         // If we switched to a fallback URL and it worked, auto-update the context RPC url
         if (url !== rpcUrl) {
@@ -188,6 +217,254 @@ const WalletInnerProvider: React.FC<{
   // Disconnect wallet
   const disconnect = async () => {
     await baseWallet.disconnect();
+  };
+
+  // Close empty token account (CORE INVARIANT: amount must be 0)
+  const closeEmptyAccount = async (mint: string): Promise<string> => {
+    if (!connected || !publicKeyStr) {
+      throw new Error('Wallet not connected');
+    }
+    if (!baseWallet.signTransaction) {
+      throw new Error('Connected wallet does not support signing transactions.');
+    }
+    if (mint === 'So11111111111111111111111111111111111111112') {
+      throw new Error('Cannot close native SOL account.');
+    }
+
+    const connection = new Connection(rpcUrl, 'confirmed');
+    const ownerPubkey = new PublicKey(publicKeyStr);
+
+    let targetAccount: { pubkey: PublicKey; programId: PublicKey; amount: number } | null = null;
+
+    for (const pid of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+      try {
+        const res = await connection.getParsedTokenAccountsByOwner(ownerPubkey, { programId: pid });
+        const match = res.value.find((acc) => acc.account.data.parsed.info.mint === mint);
+        if (match) {
+          const rawAmount = parseInt(match.account.data.parsed.info.tokenAmount.amount || '0', 10);
+          targetAccount = {
+            pubkey: match.pubkey,
+            programId: pid,
+            amount: rawAmount,
+          };
+          break;
+        }
+      } catch (err) {
+        console.warn(`Error finding account for mint ${mint}:`, err);
+      }
+    }
+
+    if (!targetAccount) {
+      throw new Error(`No token account found on-chain for mint ${mint}`);
+    }
+
+    if (targetAccount.amount !== 0) {
+      throw new Error('Cannot close account: Token balance is not 0.');
+    }
+
+    const closeIx = createCloseAccountInstruction(
+      targetAccount.pubkey,
+      ownerPubkey,
+      ownerPubkey,
+      [],
+      targetAccount.programId
+    );
+
+    const tx = new Transaction().add(closeIx);
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = ownerPubkey;
+
+    const signedTx = await baseWallet.signTransaction(tx);
+    const rawTx = signedTx.serialize();
+    const txId = await connection.sendRawTransaction(rawTx, {
+      skipPreflight: false,
+      maxRetries: 3,
+    });
+
+    try {
+      await connection.confirmTransaction({ signature: txId, blockhash, lastValidBlockHeight }, 'confirmed');
+    } catch (confirmErr) {
+      console.warn('confirmTransaction failed/timed out, polling signature status for closeEmptyAccount:', txId, confirmErr);
+      let landed = false;
+      for (let i = 0; i < 10; i++) {
+        const statusRes = await connection.getSignatureStatus(txId);
+        const status = statusRes?.value;
+        if (status && (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')) {
+          if (!status.err) {
+            landed = true;
+            break;
+          } else {
+            throw new Error(`Close account transaction failed on-chain: ${JSON.stringify(status.err)}`);
+          }
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      if (!landed) throw confirmErr;
+    }
+
+    await refreshBalances();
+    return txId;
+  };
+
+  // Convert token balance to SOL via Jupiter swap (or fallback to burn-and-close if unsellable)
+  const convertToSol = async (
+    mint: string,
+    inputDecimals: number
+  ): Promise<{ action: 'swap' | 'burn'; txId: string }> => {
+    if (!connected || !publicKeyStr) {
+      throw new Error('Wallet not connected');
+    }
+    if (!baseWallet.signTransaction) {
+      throw new Error('Connected wallet does not support signing transactions.');
+    }
+    if (mint === 'So11111111111111111111111111111111111111112') {
+      throw new Error('Cannot convert native SOL');
+    }
+
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const connection = new Connection(rpcUrl, 'confirmed');
+    const ownerPubkey = new PublicKey(publicKeyStr);
+
+    const amountBase = onChainBalances[mint] || 0;
+    if (amountBase <= 0) {
+      const txId = await closeEmptyAccount(mint);
+      return { action: 'swap', txId };
+    }
+
+    let quoteResponse: any = null;
+    try {
+      quoteResponse = await fetchQuote({
+        inputMint: mint,
+        outputMint: SOL_MINT,
+        amount: amountBase.toString(),
+        slippageBps,
+      });
+    } catch (err) {
+      console.warn(`No Jupiter quote route for ${mint}:`, err);
+      quoteResponse = null;
+    }
+
+    if (quoteResponse && quoteResponse.outAmount && parseInt(quoteResponse.outAmount, 10) > 0) {
+      // Execute swap
+      const txId = await signAndExecuteSwap({
+        inputMint: mint,
+        outputMint: SOL_MINT,
+        amountBase,
+        quoteResponse,
+        inputDecimals,
+        outputDecimals: 9,
+      });
+
+      // Post-swap: re-read account and close if emptied
+      try {
+        for (const pid of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+          const res = await connection.getParsedTokenAccountsByOwner(ownerPubkey, { programId: pid });
+          const match = res.value.find((acc) => acc.account.data.parsed.info.mint === mint);
+          if (match) {
+            const remAmt = parseInt(match.account.data.parsed.info.tokenAmount.amount || '0', 10);
+            if (remAmt === 0) {
+              const closeIx = createCloseAccountInstruction(
+                match.pubkey,
+                ownerPubkey,
+                ownerPubkey,
+                [],
+                pid
+              );
+              const closeTx = new Transaction().add(closeIx);
+              const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+              closeTx.recentBlockhash = blockhash;
+              closeTx.feePayer = ownerPubkey;
+
+              const signedClose = await baseWallet.signTransaction(closeTx);
+              const rawClose = signedClose.serialize();
+              const cTxId = await connection.sendRawTransaction(rawClose, { skipPreflight: false, maxRetries: 3 });
+              await connection.confirmTransaction({ signature: cTxId, blockhash, lastValidBlockHeight }, 'confirmed');
+            }
+            break;
+          }
+        }
+      } catch (closeErr) {
+        console.warn('Post-swap account close failed (non-fatal):', closeErr);
+      }
+
+      await refreshBalances();
+      return { action: 'swap', txId };
+    } else {
+      // Fallback: Burn & Close
+      let targetAccount: { pubkey: PublicKey; programId: PublicKey; amount: bigint } | null = null;
+      for (const pid of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+        const res = await connection.getParsedTokenAccountsByOwner(ownerPubkey, { programId: pid });
+        const match = res.value.find((acc) => acc.account.data.parsed.info.mint === mint);
+        if (match) {
+          const amtStr = match.account.data.parsed.info.tokenAmount.amount || '0';
+          targetAccount = {
+            pubkey: match.pubkey,
+            programId: pid,
+            amount: BigInt(amtStr),
+          };
+          break;
+        }
+      }
+
+      if (!targetAccount) {
+        throw new Error(`Token account not found for mint ${mint}`);
+      }
+
+      const tx = new Transaction();
+      if (targetAccount.amount > 0n) {
+        const burnIx = createBurnInstruction(
+          targetAccount.pubkey,
+          new PublicKey(mint),
+          ownerPubkey,
+          targetAccount.amount,
+          [],
+          targetAccount.programId
+        );
+        tx.add(burnIx);
+      }
+
+      const closeIx = createCloseAccountInstruction(
+        targetAccount.pubkey,
+        ownerPubkey,
+        ownerPubkey,
+        [],
+        targetAccount.programId
+      );
+      tx.add(closeIx);
+
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = ownerPubkey;
+
+      const signedTx = await baseWallet.signTransaction(tx);
+      const rawTx = signedTx.serialize();
+      const txId = await connection.sendRawTransaction(rawTx, { skipPreflight: false, maxRetries: 3 });
+
+      try {
+        await connection.confirmTransaction({ signature: txId, blockhash, lastValidBlockHeight }, 'confirmed');
+      } catch (confirmErr) {
+        console.warn('confirmTransaction failed/timed out, polling signature status for burn-and-close:', txId, confirmErr);
+        let landed = false;
+        for (let i = 0; i < 10; i++) {
+          const statusRes = await connection.getSignatureStatus(txId);
+          const status = statusRes?.value;
+          if (status && (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')) {
+            if (!status.err) {
+              landed = true;
+              break;
+            } else {
+              throw new Error(`Burn transaction failed on-chain: ${JSON.stringify(status.err)}`);
+            }
+          }
+          await new Promise((r) => setTimeout(r, 1500));
+        }
+        if (!landed) throw confirmErr;
+      }
+
+      await refreshBalances();
+      return { action: 'burn', txId };
+    }
   };
 
   // Sign and Execute swap transaction
@@ -313,10 +590,15 @@ const WalletInnerProvider: React.FC<{
         connecting,
         balances,
         realOnChainBalances,
+        tokenAccountLamports,
+        getRentSol,
+        getRentSolString,
         connect,
         disconnect,
         refreshBalances,
         signAndExecuteSwap,
+        closeEmptyAccount,
+        convertToSol,
         rpcUrl,
         setRpcUrl,
         slippageBps,

@@ -63,11 +63,7 @@ export default function PriceView({
   // 1. It is linked to any basket/group
   // 2. It is verified
   // 3. It has a real USD value (>= $0.01)
-  // AND we exclude the top index coins (BTC, ETH, SOL) to prevent duplication ("not double")
   const heldRealCoins = balancesWithPrice.filter((item) => {
-    if (topIndexMints.includes(item.mint)) {
-      return false; // prevent duplication below
-    }
     const isLinked = groups.some((g) => g.memberMints.includes(item.mint));
     const isVerified = isVerifiedCoin(item.mint);
     return isLinked || isVerified || item.usdValue >= 0.01;

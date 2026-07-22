@@ -16,7 +16,7 @@ import { PRESETS, Preset } from './presets';
 import PresetVerifier from './components/PresetVerifier';
 import TokenLogo from './components/TokenLogo';
 import { Token, TokenBalance, BalanceSnapshot, LinkGroup, getGroupColorClasses, formatPrice, COIN_METADATA, DEFAULT_POPULAR_MINTS } from './types';
-import { fetchPricesAndInfo } from './jupiter';
+import { fetchPricesAndInfo, fetchQuote } from './jupiter';
 import {
   Wallet,
   Settings,
@@ -69,6 +69,10 @@ function Dashboard() {
     disconnect,
     refreshBalances,
     signAndExecuteSwap,
+    closeEmptyAccount,
+    convertToSol,
+    getRentSol,
+    getRentSolString,
     rpcUrl,
     setRpcUrl,
     slippageBps,
@@ -78,6 +82,122 @@ function Dashboard() {
   const [rpcWarningDismissed, setRpcWarningDismissed] = useState<boolean>(() => {
     return localStorage.getItem('roundtrip_rpc_warning_dismissed') === 'true';
   });
+
+  // Confirm Action Modal for Rent Reclaim and Convert to SOL
+  const [confirmActionModal, setConfirmActionModal] = useState<{
+    isOpen: boolean;
+    type: 'close_empty' | 'convert_sol' | 'burn_close' | null;
+    item: TokenBalance | null;
+    title: string;
+    message: string;
+    confirmText: string;
+    cancelText?: string;
+    isScary?: boolean;
+  }>({
+    isOpen: false,
+    type: null,
+    item: null,
+    title: '',
+    message: '',
+    confirmText: 'Confirm',
+  });
+
+  const [actionStatusMsg, setActionStatusMsg] = useState<string | null>(null);
+
+  const handleOpenCloseEmptyModal = (item: TokenBalance) => {
+    const rentSolStr = getRentSolString(item.mint);
+    setConfirmActionModal({
+      isOpen: true,
+      type: 'close_empty',
+      item,
+      title: 'Reclaim rent?',
+      message: `This will close your empty ${item.symbol} token account and return ~${rentSolStr} SOL rent to your wallet.`,
+      confirmText: 'Reclaim Rent',
+      cancelText: 'Cancel',
+      isScary: false,
+    });
+  };
+
+  const handleInitiateConvert = async (item: TokenBalance) => {
+    const rentSolStr = getRentSolString(item.mint);
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
+    setActionStatusMsg(`Checking market route for ${item.symbol}...`);
+    try {
+      const quote = await fetchQuote({
+        inputMint: item.mint,
+        outputMint: SOL_MINT,
+        amount: item.amount.toString(),
+        slippageBps,
+      });
+
+      if (quote && quote.outAmount && parseInt(quote.outAmount, 10) > 0) {
+        setConfirmActionModal({
+          isOpen: true,
+          type: 'convert_sol',
+          item,
+          title: `Convert ${item.symbol} to SOL?`,
+          message: `This will sell your full ${item.symbol} balance (${item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })} units, ~$${item.usdValue.toFixed(2)}) for SOL via Jupiter, and then close the emptied token account to also return ~${rentSolStr} SOL rent to your wallet.`,
+          confirmText: 'Convert & Reclaim Rent',
+          cancelText: 'Cancel',
+          isScary: false,
+        });
+      } else {
+        setConfirmActionModal({
+          isOpen: true,
+          type: 'burn_close',
+          item,
+          title: `Burn & close ${item.symbol}?`,
+          message: `⚠️ WARNING: No swap route was found for ${item.symbol} (~$${item.usdValue.toFixed(2)} value). Proceeding will PERMANENTLY DESTROY your ${item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${item.symbol} tokens and close the account to recover ~${rentSolStr} SOL rent.`,
+          confirmText: 'Burn Tokens & Reclaim Rent',
+          cancelText: 'Cancel',
+          isScary: true,
+        });
+      }
+    } catch (err) {
+      setConfirmActionModal({
+        isOpen: true,
+        type: 'burn_close',
+        item,
+        title: `Burn & close ${item.symbol}?`,
+        message: `⚠️ WARNING: No swap route was found for ${item.symbol} (~$${item.usdValue.toFixed(2)} value). Proceeding will PERMANENTLY DESTROY your ${item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${item.symbol} tokens and close the account to recover ~${rentSolStr} SOL rent.`,
+        confirmText: 'Burn Tokens & Reclaim Rent',
+        cancelText: 'Cancel',
+        isScary: true,
+      });
+    } finally {
+      setActionStatusMsg(null);
+    }
+  };
+
+  const handleExecuteActionModal = async () => {
+    const { type, item } = confirmActionModal;
+    if (!item || !type) return;
+
+    setConfirmActionModal((prev) => ({ ...prev, isOpen: false }));
+    setActionStatusMsg(`Executing on-chain transaction for ${item.symbol}...`);
+
+    try {
+      if (type === 'close_empty') {
+        const txId = await closeEmptyAccount(item.mint);
+        setConvertSuccessMessage(`Successfully closed empty ${item.symbol} account and reclaimed ~${getRentSolString(item.mint)} SOL rent!`);
+      } else if (type === 'convert_sol' || type === 'burn_close') {
+        const res = await convertToSol(item.mint, item.decimals || 6);
+        if (res.action === 'swap') {
+          setConvertSuccessMessage(`Successfully converted ${item.symbol} to SOL and reclaimed account rent!`);
+        } else {
+          setConvertSuccessMessage(`Burned worthless ${item.symbol} tokens and reclaimed ~${getRentSolString(item.mint)} SOL rent!`);
+        }
+      }
+      await refreshPrices();
+    } catch (err: any) {
+      console.error('Action failed:', err);
+      setConvertSuccessMessage(`Action failed: ${err.message || 'Transaction rejected or failed on-chain.'}`);
+    } finally {
+      setActionStatusMsg(null);
+      setTimeout(() => setConvertSuccessMessage(null), 5000);
+    }
+  };
 
   // Active namespace tracking
   const activeNamespace = publicKey || 'guest';
@@ -590,7 +710,7 @@ function Dashboard() {
 
   // Global calculations
   const getWalletBalances = (): TokenBalance[] => {
-    const balanceMints = Object.keys(balances).filter((mint) => (balances[mint] || 0) > 0);
+    const balanceMints = Object.keys(balances).filter((mint) => balances[mint] !== undefined && balances[mint] !== null);
 
     return balanceMints.map((mint) => {
       const meta = tokenMetadata[mint];
@@ -1329,22 +1449,24 @@ function Dashboard() {
               const mainCoins = walletBalances.filter(item => {
                 const isLinked = groups.some((g) => g.memberMints.includes(item.mint));
                 const isVerified = isVerifiedCoin(item.mint);
-                return isLinked || isVerified || item.usdValue >= 0.01;
+                return (isLinked || isVerified || item.usdValue >= 0.01) && item.amount > 0;
               });
 
               const hiddenCoins = walletBalances.filter(item => {
                 const isLinked = groups.some((g) => g.memberMints.includes(item.mint));
                 const isVerified = isVerifiedCoin(item.mint);
-                const showInMainList = isLinked || isVerified || item.usdValue >= 0.01;
-                return !showInMainList && item.amount > 0;
-              });
+                const showInMainList = (isLinked || isVerified || item.usdValue >= 0.01) && item.amount > 0;
+                return !showInMainList;
+              }).sort((a, b) => b.usdValue - a.usdValue);
 
               const clusteredBlocks = groups.map(g => {
                 const coins = mainCoins.filter(item => g.memberMints.includes(item.mint));
                 return { group: g, coins };
               }).filter(block => block.coins.length > 0);
 
-              const unlinkedMainCoins = mainCoins.filter(item => !groups.some(g => g.memberMints.includes(item.mint)));
+              const unlinkedMainCoins = mainCoins
+                .filter(item => !groups.some(g => g.memberMints.includes(item.mint)))
+                .sort((a, b) => b.usdValue - a.usdValue);
 
               const renderDenseRow = (item: TokenBalance) => {
                 const owningGroup = groups.find((g) => g.memberMints.includes(item.mint));
@@ -1384,7 +1506,7 @@ function Dashboard() {
                       <div className="flex items-center gap-2 flex-wrap min-w-0">
                         <strong className="text-white font-extrabold text-xs">{item.symbol}</strong>
                         
-                        <span className="text-[10px] text-slate-500 font-mono">
+                        <span className="text-[10px] text-cyan-400/90 font-mono font-medium">
                           {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} units
                         </span>
 
@@ -1451,7 +1573,7 @@ function Dashboard() {
                                 }}
                               />
                               <div
-                                className="absolute right-0 mt-1 w-48 bg-slate-900 border border-slate-850 rounded-lg shadow-2xl z-50 py-1 text-left animate-in fade-in duration-100"
+                                className="absolute right-0 mt-1 w-56 bg-slate-900 border border-slate-850 rounded-lg shadow-2xl z-50 py-1 text-left animate-in fade-in duration-100"
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 {isLinked ? (
@@ -1486,23 +1608,25 @@ function Dashboard() {
                                       Move to Group
                                     </div>
                                     {groups.filter((g) => g.id !== owningGroup.id).length === 0 ? (
-                                      <div className="px-3 py-1 text-[10px] text-slate-500 italic">No other groups</div>
+                                      <div className="px-3 py-1 text-[10px] text-slate-500 italic border-b border-slate-850 pb-1">No other groups</div>
                                     ) : (
-                                      groups
-                                        .filter((g) => g.id !== owningGroup.id)
-                                        .map((g) => (
-                                          <button
-                                            key={g.id}
-                                            onClick={() => {
-                                              handleMoveToken(item.mint, owningGroup, g);
-                                              setOpenMenuMint(null);
-                                            }}
-                                            className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 truncate flex items-center gap-1.5 cursor-pointer"
-                                          >
-                                            <span className={`w-1.5 h-1.5 rounded-full ${getGroupColorClasses(g.color).bgSolid}`} />
-                                            {g.name}
-                                          </button>
-                                        ))
+                                      <div className="border-b border-slate-850 pb-1">
+                                        {groups
+                                          .filter((g) => g.id !== owningGroup.id)
+                                          .map((g) => (
+                                            <button
+                                              key={g.id}
+                                              onClick={() => {
+                                                handleMoveToken(item.mint, owningGroup, g);
+                                                setOpenMenuMint(null);
+                                              }}
+                                              className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 truncate flex items-center gap-1.5 cursor-pointer"
+                                            >
+                                              <span className={`w-1.5 h-1.5 rounded-full ${getGroupColorClasses(g.color).bgSolid}`} />
+                                              {g.name}
+                                            </button>
+                                          ))}
+                                      </div>
                                     )}
                                   </>
                                 ) : (
@@ -1511,29 +1635,71 @@ function Dashboard() {
                                       Add to Group
                                     </div>
                                     {groups.length === 0 ? (
-                                      <div className="px-3 py-1 text-[10px] text-slate-500 italic">No groups created yet</div>
+                                      <div className="px-3 py-1 text-[10px] text-slate-500 italic border-b border-slate-850 pb-1">No groups created yet</div>
                                     ) : (
-                                      groups.map((g) => (
-                                        <button
-                                          key={g.id}
-                                          onClick={() => {
-                                            setGroups((prev) =>
-                                              prev.map((currentG) =>
-                                                currentG.id === g.id
-                                                  ? { ...currentG, memberMints: [...currentG.memberMints, item.mint] }
-                                                  : currentG
-                                              )
-                                            );
-                                            setOpenMenuMint(null);
-                                          }}
-                                          className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 truncate flex items-center gap-1.5 cursor-pointer"
-                                        >
-                                          <span className={`w-1.5 h-1.5 rounded-full ${getGroupColorClasses(g.color).bgSolid}`} />
-                                          {g.name}
-                                        </button>
-                                      ))
+                                      <div className="border-b border-slate-850 pb-1">
+                                        {groups.map((g) => (
+                                          <button
+                                            key={g.id}
+                                            onClick={() => {
+                                              setGroups((prev) =>
+                                                prev.map((currentG) =>
+                                                  currentG.id === g.id
+                                                    ? { ...currentG, memberMints: [...currentG.memberMints, item.mint] }
+                                                    : currentG
+                                                )
+                                              );
+                                              setOpenMenuMint(null);
+                                            }}
+                                            className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 truncate flex items-center gap-1.5 cursor-pointer"
+                                          >
+                                            <span className={`w-1.5 h-1.5 rounded-full ${getGroupColorClasses(g.color).bgSolid}`} />
+                                            {g.name}
+                                          </button>
+                                        ))}
+                                      </div>
                                     )}
                                   </>
+                                )}
+
+                                {/* Rent Reclaim / Convert Actions */}
+                                {item.mint !== 'So11111111111111111111111111111111111111112' && (
+                                  <div className="pt-1 mt-1">
+                                    {item.amount === 0 ? (
+                                      <button
+                                        onClick={() => {
+                                          setOpenMenuMint(null);
+                                          handleOpenCloseEmptyModal(item);
+                                        }}
+                                        className="w-full text-left px-3 py-1.5 text-xs text-emerald-400 hover:bg-slate-800 font-medium cursor-pointer flex items-center justify-between gap-2"
+                                      >
+                                        <span>🧹 Reclaim Rent</span>
+                                        <span className="text-[10px] text-emerald-500 font-mono">~{getRentSolString(item.mint)} SOL</span>
+                                      </button>
+                                    ) : (
+                                      <>
+                                        <button
+                                          onClick={() => {
+                                            setOpenMenuMint(null);
+                                            handleInitiateConvert(item);
+                                          }}
+                                          className="w-full text-left px-3 py-1.5 text-xs text-amber-300 hover:bg-slate-800 font-medium cursor-pointer flex items-center justify-between gap-2"
+                                        >
+                                          <span>⚡ Convert to SOL</span>
+                                          <span className="text-[9px] text-amber-400/70 font-mono">Sell + Reclaim</span>
+                                        </button>
+
+                                        <button
+                                          disabled
+                                          title="Close token account requires exactly 0 balance. Convert or transfer tokens out first."
+                                          className="w-full text-left px-3 py-1.5 text-xs text-slate-600 font-medium cursor-not-allowed flex items-center justify-between gap-2 opacity-60"
+                                        >
+                                          <span>🧹 Close account</span>
+                                          <span className="text-[9px] text-slate-600 font-mono">0 balance required</span>
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             </>
@@ -1957,6 +2123,13 @@ function Dashboard() {
       )}
 
       {/* Floating Success Notification Toast */}
+      {actionStatusMsg && (
+        <div className="fixed bottom-14 right-6 bg-slate-900 border border-slate-800 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 max-w-sm z-50 animate-in slide-in-from-bottom-4 duration-350">
+          <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0" />
+          <span className="text-xs text-slate-200 font-medium">{actionStatusMsg}</span>
+        </div>
+      )}
+
       {convertSuccessMessage && (
         <div className="fixed bottom-14 right-6 bg-slate-900 border border-slate-800 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 max-w-sm z-50 animate-in slide-in-from-bottom-4 duration-350">
           <div className="w-5 h-5 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center shrink-0">
@@ -1965,6 +2138,19 @@ function Dashboard() {
           <span className="text-xs text-slate-200 leading-normal">{convertSuccessMessage}</span>
         </div>
       )}
+
+      {/* Action Modal for Close Empty / Convert to SOL / Burn Fallback */}
+      <ConfirmModal
+        isOpen={confirmActionModal.isOpen}
+        title={confirmActionModal.title}
+        message={confirmActionModal.message}
+        confirmText={confirmActionModal.confirmText}
+        cancelText={confirmActionModal.cancelText || 'Cancel'}
+        isScary={confirmActionModal.isScary}
+        badgeText={confirmActionModal.isScary ? '🔥 BURN WARNING' : '🧹 RECLAIM RENT'}
+        onConfirm={handleExecuteActionModal}
+        onCancel={() => setConfirmActionModal((prev) => ({ ...prev, isOpen: false }))}
+      />
 
       {/* Sidebar Delete Group Confirm */}
       <ConfirmModal
