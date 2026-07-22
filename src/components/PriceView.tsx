@@ -1,7 +1,36 @@
-import React from 'react';
-import { TrendingUp, TrendingDown, RefreshCw, Flame, Loader2, Sparkles, AlertOctagon, ChevronDown } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import {
+  TrendingUp,
+  TrendingDown,
+  RefreshCw,
+  Flame,
+  Loader2,
+  Sparkles,
+  ChevronDown,
+  Search,
+  ArrowRight,
+  ArrowDownUp,
+  Zap,
+  CheckCircle2,
+  AlertCircle,
+  ExternalLink,
+  ChevronRight,
+  X,
+} from 'lucide-react';
 import { TokenBalance, LinkGroup, Token, getGroupColorClasses, formatPrice } from '../types';
 import TokenLogo from './TokenLogo';
+import { useSolanaWallet } from './WalletProvider';
+import { fetchQuote, fetchVerifiedTokens } from '../jupiter';
+
+// Helper for stable organic placement per token
+const seededRand = (s: string) => {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 100000) / 100000;
+};
 
 interface PriceViewProps {
   balancesWithPrice: TokenBalance[];
@@ -30,85 +59,286 @@ export default function PriceView({
   landingMode = false,
   onConnect,
 }: PriceViewProps) {
-  const [showHiddenPrices, setShowHiddenPrices] = React.useState(false);
+  const wallet = useSolanaWallet();
+  const signAndExecuteSwap = wallet?.signAndExecuteSwap;
+  const slippageBps = wallet?.slippageBps || 50;
+  const publicKey = wallet?.publicKey;
+  const refreshBalances = wallet?.refreshBalances;
 
-  // Top Index Coin definition
-  const topIndexConfigs = [
-    {
-      mint: 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij', // cbBTC
-      symbol: 'BTC',
-      name: 'Bitcoin',
-      logoURI: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij/logo.png',
-    },
-    {
-      mint: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // ETH
-      symbol: 'ETH',
-      name: 'Ethereum',
-      logoURI: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs/logo.png',
-    },
-    {
-      mint: 'So11111111111111111111111111111111111111112', // SOL
-      symbol: 'SOL',
-      name: 'Solana',
-      logoURI: 'https://dd.dexscreener.com/api/logo/1/solana/So11111111111111111111111111111111111111112',
-    },
-  ];
+  const [showHiddenPrices, setShowHiddenPrices] = useState(false);
 
-  const topIndexMints = topIndexConfigs.map(c => c.mint);
+  // Verified tokens list from Jupiter for Into token search
+  const [verifiedTokens, setVerifiedTokens] = useState<Token[]>([]);
 
-  // Apply junk filter matching the wallet inventory:
-  // Must have balance > 0 (already guaranteed by balancesWithPrice)
-  // AND exclude nonzero-balance-but-~$0-value and unverified tokens.
-  // Meaning we keep a coin if:
-  // 1. It is linked to any basket/group
-  // 2. It is verified
-  // 3. It has a real USD value (>= $0.01)
-  const heldRealCoins = balancesWithPrice.filter((item) => {
-    const isLinked = groups.some((g) => g.memberMints.includes(item.mint));
-    const isVerified = isVerifiedCoin(item.mint);
-    return isLinked || isVerified || item.usdValue >= 0.01;
-  });
+  useEffect(() => {
+    fetchVerifiedTokens().then((tokens) => {
+      if (tokens && tokens.length > 0) {
+        setVerifiedTokens(tokens);
+      }
+    }).catch((err) => {
+      console.warn('Could not load verified tokens for search:', err);
+    });
+  }, []);
 
-  // Sort by 24h price change % descending
-  const sortedCoins = [...heldRealCoins].sort((a, b) => {
-    const changeA = a.change24h || 0;
-    const changeB = b.change24h || 0;
-    return changeB - changeA;
-  });
+  // Filter held real coins for the arena (>= $1 USD value to avoid dust clutter)
+  const heldRealCoins = useMemo(() => {
+    return balancesWithPrice.filter((item) => {
+      const isLinked = groups.some((g) => g.memberMints.includes(item.mint));
+      const isVerified = isVerifiedCoin(item.mint);
+      return (isLinked || isVerified || item.usdValue >= 0.01) && item.amount > 0;
+    });
+  }, [balancesWithPrice, groups, isVerifiedCoin]);
+
+  // Sort by 24h price change % descending for ranking in arena
+  const sortedCoins = useMemo(() => {
+    return [...heldRealCoins].sort((a, b) => {
+      const changeA = a.change24h || 0;
+      const changeB = b.change24h || 0;
+      return changeB - changeA;
+    });
+  }, [heldRealCoins]);
+
+  // Arena coins filtered to usdValue >= $1 to drop dust
+  const arenaCoins = useMemo(() => {
+    return sortedCoins.filter((c) => c.usdValue >= 1);
+  }, [sortedCoins]);
 
   // Calculate total portfolio values and enrich held assets data
   let totalHoldingsValue = 0;
   let total24hMoveUsd = 0;
 
-  const enrichedCoins = sortedCoins.map((item) => {
-    const priceInfo = prices[item.mint] || { price: item.price || 0, change24h: item.change24h || 0 };
-    const price = priceInfo.price;
-    const change24h = priceInfo.change24h || 0;
-    const currentHoldingsUsd = item.amountHuman * price;
-    const factor = 1 + (change24h / 100);
-    const holdings24hChangeUsd = factor !== 0 ? currentHoldingsUsd - (currentHoldingsUsd / factor) : 0;
-    
-    totalHoldingsValue += currentHoldingsUsd;
-    total24hMoveUsd += holdings24hChangeUsd;
+  const enrichedCoins = balancesWithPrice
+    .filter((item) => {
+      const isLinked = groups.some((g) => g.memberMints.includes(item.mint));
+      const isVerified = isVerifiedCoin(item.mint);
+      return isLinked || isVerified || item.usdValue >= 0.01;
+    })
+    .sort((a, b) => (b.change24h || 0) - (a.change24h || 0))
+    .map((item) => {
+      const priceInfo = prices[item.mint] || { price: item.price || 0, change24h: item.change24h || 0 };
+      const price = priceInfo.price;
+      const change24h = priceInfo.change24h || 0;
+      const currentHoldingsUsd = item.amountHuman * price;
+      const factor = 1 + (change24h / 100);
+      const holdings24hChangeUsd = factor !== 0 ? currentHoldingsUsd - (currentHoldingsUsd / factor) : 0;
+      
+      totalHoldingsValue += currentHoldingsUsd;
+      total24hMoveUsd += holdings24hChangeUsd;
 
-    const owningGroup = groups.find((g) => g.memberMints.includes(item.mint));
-    const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
-    const isCrashed = change24h <= -40.0;
+      const owningGroup = groups.find((g) => g.memberMints.includes(item.mint));
+      const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
+      const isCrashed = change24h <= -40.0;
 
-    return {
-      item,
-      price,
-      change24h,
-      currentHoldingsUsd,
-      holdings24hChangeUsd,
-      owningGroup,
-      gColors,
-      isCrashed,
-    };
-  });
+      return {
+        item,
+        price,
+        change24h,
+        currentHoldingsUsd,
+        holdings24hChangeUsd,
+        owningGroup,
+        gColors,
+        isCrashed,
+      };
+    });
 
   const mainEnrichedCoins = enrichedCoins.filter(row => row.currentHoldingsUsd >= 0.01);
   const hiddenEnrichedCoins = enrichedCoins.filter(row => row.currentHoldingsUsd < 0.01);
+
+  // Maximum 24h change magnitude for arena terrain mood based on visible arenaCoins
+  const maxAbsChange = useMemo(() => {
+    if (arenaCoins.length === 0) return 0;
+    return Math.max(...arenaCoins.map(c => Math.abs(c.change24h || 0)));
+  }, [arenaCoins]);
+
+  // Selected coin on the Canvas
+  const [selectedMint, setSelectedMint] = useState<string | null>(null);
+
+  // Trade Panel States
+  interface TradeSlotToken {
+    mint: string;
+    symbol: string;
+    logoURI?: string;
+    decimals: number;
+    amountHuman?: number;
+    price?: number;
+    change24h?: number;
+    usdValue?: number;
+  }
+
+  const [fromToken, setFromToken] = useState<TradeSlotToken | null>(null);
+  const [intoToken, setIntoToken] = useState<TradeSlotToken | null>(null);
+  const [fromAmount, setFromAmount] = useState<string>('');
+  
+  const [showFromDropdown, setShowFromDropdown] = useState(false);
+  const [showIntoDropdown, setShowIntoDropdown] = useState(false);
+  const [intoSearchQuery, setIntoSearchQuery] = useState('');
+
+  // Quote state
+  const [quote, setQuote] = useState<any>(null);
+  const [quoting, setQuoting] = useState(false);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+
+  // Swap action state
+  const [swapping, setSwapping] = useState(false);
+  const [swapSuccessMsg, setSwapSuccessMsg] = useState<string | null>(null);
+  const [swapErrorMsg, setSwapErrorMsg] = useState<string | null>(null);
+
+  // Load Sell coin into FROM slot
+  const handleSellCoin = (coin: TokenBalance) => {
+    const decimals = coin.decimals || tokenMetadata[coin.mint]?.decimals || 6;
+    setFromToken({
+      mint: coin.mint,
+      symbol: coin.symbol,
+      logoURI: coin.logoURI,
+      decimals,
+      amountHuman: coin.amountHuman,
+      price: coin.price,
+      change24h: coin.change24h,
+      usdValue: coin.usdValue,
+    });
+
+    // If up today, prefill with today's dollar move on holdings converted to token units
+    if ((coin.change24h || 0) > 0 && coin.usdValue > 0 && coin.price > 0) {
+      const factor = 1 + ((coin.change24h || 0) / 100);
+      const holdings24hChangeUsd = coin.usdValue - (coin.usdValue / factor);
+      const gainInTokenUnits = holdings24hChangeUsd / coin.price;
+      setFromAmount(gainInTokenUnits.toFixed(6));
+    } else {
+      setFromAmount('');
+    }
+  };
+
+  // Load Buy coin into INTO slot
+  const handleBuyCoin = (coin: TokenBalance | Token) => {
+    const mint = 'mint' in coin ? coin.mint : coin.address;
+    const decimals = coin.decimals || tokenMetadata[mint]?.decimals || 6;
+    setIntoToken({
+      mint,
+      symbol: coin.symbol,
+      logoURI: coin.logoURI,
+      decimals,
+    });
+  };
+
+  // Fetch Jupiter quote when From token, Into token, and From amount are set
+  useEffect(() => {
+    if (!fromToken || !intoToken || !fromAmount || parseFloat(fromAmount) <= 0) {
+      setQuote(null);
+      setQuoteError(null);
+      return;
+    }
+
+    if (fromToken.mint === intoToken.mint) {
+      setQuote(null);
+      setQuoteError('Cannot swap same token');
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setQuoting(true);
+      setQuoteError(null);
+      try {
+        const decimals = fromToken.decimals || 6;
+        const amountBase = Math.floor(parseFloat(fromAmount) * (10 ** decimals));
+        if (amountBase <= 0) {
+          setQuoting(false);
+          return;
+        }
+
+        const q = await fetchQuote({
+          inputMint: fromToken.mint,
+          outputMint: intoToken.mint,
+          amount: amountBase.toString(),
+          slippageBps,
+        });
+
+        if (q && q.outAmount) {
+          setQuote(q);
+        } else {
+          setQuote(null);
+          setQuoteError('No swap route found');
+        }
+      } catch (err: any) {
+        console.warn('Quote fetch error:', err);
+        setQuote(null);
+        setQuoteError(err.message || 'Route unavailable');
+      } finally {
+        setQuoting(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [fromToken, intoToken, fromAmount, slippageBps]);
+
+  // Execute Swap via Wallet
+  const handleExecuteSwap = async () => {
+    if (!signAndExecuteSwap || !fromToken || !intoToken || !fromAmount || !quote) return;
+
+    setSwapping(true);
+    setSwapErrorMsg(null);
+    setSwapSuccessMsg(null);
+
+    try {
+      const inputDecimals = fromToken.decimals || 6;
+      const outputDecimals = intoToken.decimals || 6;
+      const amountBase = Math.floor(parseFloat(fromAmount) * (10 ** inputDecimals));
+
+      const txId = await signAndExecuteSwap({
+        inputMint: fromToken.mint,
+        outputMint: intoToken.mint,
+        amountBase,
+        quoteResponse: quote,
+        inputDecimals,
+        outputDecimals,
+      });
+
+      setSwapSuccessMsg(`Swapped ${fromToken.symbol} to ${intoToken.symbol}!`);
+      if (refreshBalances) await refreshBalances();
+      await onRefreshPrices();
+
+      setFromAmount('');
+      setQuote(null);
+    } catch (err: any) {
+      console.error('Swap execution error:', err);
+      setSwapErrorMsg(err.message || 'Swap transaction rejected or failed.');
+    } finally {
+      setSwapping(false);
+      setTimeout(() => {
+        setSwapSuccessMsg(null);
+      }, 5000);
+    }
+  };
+
+  // Filter verified tokens for Into selector dropdown search
+  const filteredIntoTokens = useMemo(() => {
+    const q = intoSearchQuery.trim().toLowerCase();
+    
+    // Combine current held real coins and verified tokens list
+    const combinedMap = new Map<string, Token>();
+
+    heldRealCoins.forEach((c) => {
+      combinedMap.set(c.mint, {
+        address: c.mint,
+        symbol: c.symbol,
+        name: tokenMetadata[c.mint]?.name || c.symbol,
+        decimals: c.decimals || 6,
+        logoURI: c.logoURI,
+      });
+    });
+
+    verifiedTokens.forEach((vt) => {
+      if (!combinedMap.has(vt.address)) {
+        combinedMap.set(vt.address, vt);
+      }
+    });
+
+    const list = Array.from(combinedMap.values());
+    if (!q) return list.slice(0, 40);
+
+    return list
+      .filter((t) => t.symbol.toLowerCase().includes(q) || (t.name && t.name.toLowerCase().includes(q)) || t.address.toLowerCase() === q)
+      .slice(0, 40);
+  }, [heldRealCoins, verifiedTokens, intoSearchQuery, tokenMetadata]);
 
   const handleRowClick = (row: typeof enrichedCoins[0]) => {
     if (row.owningGroup) {
@@ -118,108 +348,173 @@ export default function PriceView({
     }
   };
 
-  // Helper renderer for a standard super-compact tile
-  const renderCoinTile = (mint: string, symbol: string, logoURI: string | undefined, isTopIndex: boolean = false) => {
-    const priceInfo = prices[mint] || { price: 0, change24h: 0 };
-    const changePercent = priceInfo.change24h || 0;
-    const isUp = changePercent >= 0;
-    const isCrashed = changePercent <= -40.0;
+  // Selected coin object on Canvas
+  const selectedCoinObj = useMemo(() => {
+    if (!selectedMint) return null;
+    return arenaCoins.find(c => c.mint === selectedMint) || null;
+  }, [selectedMint, arenaCoins]);
 
-    // Find owning group for this coin
-    const owningGroup = groups.find((g) => g.memberMints.includes(mint));
-    const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
+  const selectedCoinGroup = useMemo(() => {
+    if (!selectedCoinObj) return null;
+    return groups.find((g) => g.memberMints.includes(selectedCoinObj.mint)) || null;
+  }, [selectedCoinObj, groups]);
 
-    const handleTileClick = () => {
-      if (owningGroup) {
-        onSelectGroup(owningGroup.id);
+  // Deterministic overlap-relaxation pass for arena bubbles
+  const positionedArenaCoins = useMemo(() => {
+    if (arenaCoins.length === 0) return [];
+
+    const SOFT_CEIL = 15;
+    const DEAD_ZONE = 1.5;
+
+    const W = 1000;
+    const H = 580;
+
+    const nodes = arenaCoins.map((coin) => {
+      const change = coin.change24h || 0;
+      const sign = change >= 0 ? 1 : -1;
+      const mag = Math.abs(change);
+
+      let intensity: number;
+      if (mag <= DEAD_ZONE) {
+        intensity = (mag / DEAD_ZONE) * 0.12;
       } else {
-        onNavigateToWallet();
+        const t = Math.min(1, (mag - DEAD_ZONE) / (SOFT_CEIL - DEAD_ZONE));
+        intensity = 0.12 + Math.pow(t, 0.8) * 0.88;
       }
-    };
 
-    return (
-      <div
-        key={mint}
-        onClick={handleTileClick}
-        className={`p-3 rounded-xl border transition-all hover:border-emerald-500/40 hover:bg-slate-850/40 active:scale-[0.98] bg-slate-900 flex flex-col justify-between gap-1.5 shadow-md relative overflow-hidden cursor-pointer ${
-          isCrashed ? 'border-rose-500/30 bg-rose-950/10' : 'border-slate-800/80'
-        } ${isTopIndex ? 'border-slate-700 bg-slate-900/90' : ''}`}
-        title={`Click to view in ${owningGroup ? `basket: ${owningGroup.name}` : 'wallet inventory'}`}
-      >
-        {/* Header: Logo, symbol, and crash tag */}
-        <div className="flex items-center gap-2 min-w-0">
-          <TokenLogo logoURI={logoURI} symbol={symbol} size="sm" />
-          <div className="leading-none min-w-0">
-            <div className="flex items-center gap-1">
-              <span className="font-extrabold text-white text-xs truncate block">{symbol}</span>
-              {isCrashed && (
-                <span className="bg-rose-500/20 text-rose-400 text-[7px] font-black uppercase px-1 rounded">
-                  DROP
-                </span>
-              )}
-            </div>
-            <span className="text-[8px] text-slate-500 font-mono">
-              {mint.substring(0, 4)}...{mint.substring(mint.length - 4)}
-            </span>
-          </div>
-        </div>
+      let topPercent = 50 - sign * intensity * 38;
+      topPercent += (seededRand(coin.mint + 'y') - 0.5) * 5;
+      topPercent = Math.max(6, Math.min(94, topPercent));
 
-        {/* Live Price Display */}
-        <div className="font-mono font-black text-slate-200 text-sm tracking-tight">
-          {priceInfo.price > 0 ? (
-            formatPrice(priceInfo.price)
-          ) : (
-            <span className="text-rose-500 text-[10px] font-semibold">Offline</span>
-          )}
-        </div>
+      const xPercent = 8 + seededRand(coin.mint) * 84;
 
-        {/* Bottom row: Price change percentage and owning group label */}
-        <div className="flex items-center justify-between gap-1.5 border-t border-slate-800/40 pt-1.5">
-          {/* Volatility Badge */}
-          <div className={`inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded leading-none ${
-            isUp
-              ? 'bg-emerald-500/10 text-emerald-400'
-              : 'bg-rose-500/10 text-rose-400'
-          }`}>
-            {isUp ? <TrendingUp className="w-2.5 h-2.5" /> : <TrendingDown className="w-2.5 h-2.5" />}
-            <span>{isUp ? '+' : ''}{changePercent.toFixed(1)}%</span>
-          </div>
+      const share = totalHoldingsValue > 0 ? coin.usdValue / totalHoldingsValue : 0;
+      const diameter = Math.max(32, Math.min(74, Math.round(32 + share * 110)));
 
-          {/* Basket tag */}
-          <div className="min-w-0 flex-shrink truncate">
-            {owningGroup && gColors ? (
-              <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-black tracking-wide uppercase leading-none truncate max-w-[80px] ${gColors.bg} ${gColors.text} border ${gColors.border}`}>
-                <span className={`w-1 h-1 rounded-full ${gColors.bgSolid}`} />
-                {owningGroup.name}
-              </span>
-            ) : (
-              <span className="text-[8px] text-slate-600 font-bold uppercase tracking-wider">Unlinked</span>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
+      const x = (xPercent / 100) * W;
+      const y = (topPercent / 100) * H;
+
+      return {
+        coin,
+        diameter,
+        x,
+        y,
+        initY: y,
+        r: diameter / 2 + 10,
+      };
+    });
+
+    for (let iter = 0; iter < 6; iter++) {
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i];
+          const b = nodes[j];
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 0.1) {
+            dx = (seededRand(a.coin.mint + 'dx') - 0.5) * 2;
+            dy = (seededRand(b.coin.mint + 'dy') - 0.5) * 2;
+            dist = Math.sqrt(dx * dx + dy * dy);
+          }
+          const minDist = a.r + b.r;
+
+          if (dist < minDist) {
+            const overlap = minDist - dist;
+            const nx = dx / dist;
+            const ny = dy / dist;
+
+            const pushX = nx * overlap * 0.5 * 0.85;
+            const pushY = ny * overlap * 0.5 * 0.15;
+
+            a.x -= pushX;
+            b.x += pushX;
+
+            a.y -= pushY;
+            b.y += pushY;
+
+            const maxVertDrift = H * 0.04;
+            a.y = Math.max(a.initY - maxVertDrift, Math.min(a.initY + maxVertDrift, a.y));
+            b.y = Math.max(b.initY - maxVertDrift, Math.min(b.initY + maxVertDrift, b.y));
+          }
+        }
+      }
+    }
+
+    return nodes.map((node) => ({
+      coin: node.coin,
+      diameter: node.diameter,
+      xPercent: Math.max(6, Math.min(94, (node.x / W) * 100)),
+      topPercent: Math.max(6, Math.min(94, (node.y / H) * 100)),
+    }));
+  }, [arenaCoins, totalHoldingsValue]);
 
   return (
     <div id="price-view" className="space-y-4">
-      
-      {/* Intro Stats Banner: Clean & Compact */}
+      {/* Dynamic Keyframe Style Block for Floating Arena Animations */}
+      <style>{`
+        @keyframes lavaRise {
+          0% { transform: translateY(20px) scale(0.6); opacity: 0.2; }
+          50% { transform: translateY(-40px) scale(1.1); opacity: 0.8; }
+          100% { transform: translateY(-90px) scale(0.3); opacity: 0; }
+        }
+        @keyframes emberFly {
+          0% { transform: translateY(0px) translateX(0px); opacity: 0.9; }
+          100% { transform: translateY(-110px) translateX(12px); opacity: 0; }
+        }
+        @keyframes winnerBob {
+          0%, 100% { transform: translateY(0px); }
+          50% { transform: translateY(-6px); }
+        }
+        @keyframes loserWobble {
+          0%, 100% { transform: rotate(0deg) translateY(0px); }
+          25% { transform: rotate(-3deg) translateY(2px); }
+          75% { transform: rotate(3deg) translateY(1px); }
+        }
+        @keyframes wingFlapLeft {
+          0%, 100% { transform: translateY(-50%) rotate(0deg); }
+          50% { transform: translateY(-50%) rotate(-18deg) scale(1.1); }
+        }
+        @keyframes wingFlapRight {
+          0%, 100% { transform: translateY(-50%) rotate(0deg); }
+          50% { transform: translateY(-50%) rotate(18deg) scale(1.1); }
+        }
+        .animate-lava-rise {
+          animation: lavaRise 3.5s infinite linear;
+        }
+        .animate-ember-fly {
+          animation: emberFly 2.8s infinite ease-out;
+        }
+        .animate-winner-bob {
+          animation: winnerBob 3.5s ease-in-out infinite;
+        }
+        .animate-loser-wobble {
+          animation: loserWobble 2.8s ease-in-out infinite;
+        }
+        .animate-wing-flap-left {
+          animation: wingFlapLeft 1.2s ease-in-out infinite;
+        }
+        .animate-wing-flap-right {
+          animation: wingFlapRight 1.2s ease-in-out infinite;
+        }
+      `}</style>
+
+      {/* Intro Stats Banner */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl flex flex-row justify-between items-center gap-4">
         <div className="space-y-0.5">
           <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
             <Flame className="w-4 h-4 text-emerald-400" />
             Live Market Intel
           </h3>
-          <p className="text-[11px] text-slate-400 hidden sm:block">
-            Real-time USD prices and 24h volatility trackers sourced from Jupiter.
+          <p className="text-[11px] text-slate-400">
+            "There are no gains in crypto, only round trips."
           </p>
         </div>
 
         <button
           onClick={onRefreshPrices}
           disabled={loadingPrices}
-          className="bg-slate-950 hover:bg-slate-850 border border-slate-800 text-slate-300 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+          className="bg-slate-950 hover:bg-slate-850 border border-slate-800 text-slate-300 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shrink-0"
         >
           {loadingPrices ? (
             <>
@@ -235,17 +530,659 @@ export default function PriceView({
         </button>
       </div>
 
-      {/* TOP INDEX LIST (BTC, ETH, SOL) */}
-      <div className="space-y-1.5">
-        <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider pl-1">Top Market Indices</span>
-        <div className="grid grid-cols-3 gap-2">
-          {topIndexConfigs.map((cfg) => {
-            // Find logo from tokenMetadata if available as fallback
-            const metaLogo = tokenMetadata[cfg.mint]?.logoURI || cfg.logoURI;
-            return renderCoinTile(cfg.mint, cfg.symbol, metaLogo, true);
-          })}
+      {/* WALLET ARENA HERO & TRADE PANEL */}
+      {!landingMode && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          
+          {/* LEFT COLUMN: HERO ARENA + SELECTION BAR STRIP */}
+          <div className="lg:col-span-8 flex flex-col gap-3">
+
+            {/* THE CANVAS (Hero Arena, ~600px - "HODLers & Lava") */}
+            <div className="relative h-[600px] rounded-2xl border overflow-hidden shadow-2xl flex flex-col justify-between p-4 transition-all duration-500 bg-slate-950 border-slate-800">
+            
+            {/* SKY LAYER (Top Half) */}
+            <div className={`absolute inset-x-0 top-0 h-1/2 pointer-events-none transition-all duration-700 ${
+              maxAbsChange > 20
+                ? 'bg-gradient-to-b from-slate-950 via-indigo-950/80 to-rose-950/40'
+                : 'bg-gradient-to-b from-indigo-950/90 via-slate-950 to-amber-950/20'
+            }`} />
+
+            {/* LAVA PIT LAYER (Bottom Half) */}
+            <div className="absolute inset-x-0 bottom-0 h-1/2 pointer-events-none transition-all duration-700 bg-gradient-to-b from-slate-950 via-amber-950/60 to-rose-900/80 overflow-hidden">
+              {/* Glowing magma floor */}
+              <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-orange-500/30 via-amber-500/15 to-transparent blur-md pointer-events-none" />
+
+              {/* Lava Blobs */}
+              {[...Array(8)].map((_, i) => (
+                <div
+                  key={`blob-${i}`}
+                  style={{
+                    left: `${8 + i * 11.5}%`,
+                    animationDelay: `${(i * 0.6) % 3}s`,
+                    animationDuration: `${3 + (i % 3) * 0.8}s`,
+                  }}
+                  className="absolute bottom-0 w-3.5 h-3.5 rounded-full bg-gradient-to-t from-orange-500 to-amber-300 blur-sm opacity-70 animate-lava-rise pointer-events-none"
+                />
+              ))}
+
+              {/* Ember particles */}
+              {[...Array(7)].map((_, i) => (
+                <div
+                  key={`ember-${i}`}
+                  style={{
+                    left: `${12 + i * 13}%`,
+                    animationDelay: `${(i * 0.4) % 2.5}s`,
+                    animationDuration: `${2.2 + (i % 2) * 0.6}s`,
+                  }}
+                  className="absolute bottom-1 w-1.5 h-1.5 rounded-full bg-amber-300 shadow-[0_0_6px_#f59e0b] animate-ember-fly pointer-events-none"
+                />
+              ))}
+            </div>
+
+            {/* ROPE & PLANK SUSPENSION BRIDGE (At 50% parity line) */}
+            <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 z-10 pointer-events-none">
+              <svg className="w-full h-6 overflow-visible" viewBox="0 0 1000 26" preserveAspectRatio="none">
+                {/* Anchor Posts */}
+                <rect x="0" y="0" width="8" height="26" rx="2" fill="#3f1d0b" stroke="#78350f" strokeWidth="1" />
+                <rect x="992" y="0" width="8" height="26" rx="2" fill="#3f1d0b" stroke="#78350f" strokeWidth="1" />
+                {/* Top Rope */}
+                <path d="M 4 3 Q 500 9 996 3" stroke="#b45309" strokeWidth="2.5" fill="none" strokeLinecap="round" />
+                {/* Bottom Rope */}
+                <path d="M 4 21 Q 500 25 996 21" stroke="#b45309" strokeWidth="2.5" fill="none" strokeLinecap="round" />
+                {/* Vertical Wooden Planks */}
+                {[...Array(48)].map((_, idx) => {
+                  const x = idx * 20.5 + 8;
+                  const normX = x / 1000;
+                  const sag = 5 * Math.sin(normX * Math.PI);
+                  return (
+                    <rect
+                      key={`plank-${idx}`}
+                      x={x}
+                      y={2 + sag}
+                      width="12"
+                      height="18"
+                      rx="1.5"
+                      fill="#582f0e"
+                      stroke="#854d0e"
+                      strokeWidth="1"
+                      opacity="0.95"
+                    />
+                  );
+                })}
+              </svg>
+              <div className="absolute left-3 top-1/2 -translate-y-1/2 bg-slate-900/90 border border-amber-800/80 text-amber-200 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-0.5 rounded-md shadow-lg z-20 flex items-center gap-1">
+                <span>🌉</span> 0.0% PARITY
+              </div>
+            </div>
+
+            {/* Mood Badge (Top Right) */}
+            <div className="relative z-10 flex justify-end text-[10px] font-extrabold uppercase tracking-widest pointer-events-none">
+              <div className="flex items-center gap-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800 backdrop-blur-sm">
+                {maxAbsChange > 20 ? (
+                  <span className="flex items-center gap-1 text-rose-400 font-bold">
+                    <span>🌋</span> Erupting
+                  </span>
+                ) : maxAbsChange >= 5 ? (
+                  <span className="flex items-center gap-1 text-amber-300 font-bold">
+                    <span>⛅</span> Rumbling
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-emerald-300 font-bold">
+                    <span>☀️</span> Dormant
+                  </span>
+                )}
+                <span className="text-slate-400 font-mono text-[9px] font-normal border-l border-slate-700/80 pl-1.5">
+                  {maxAbsChange.toFixed(1)}% MAX
+                </span>
+              </div>
+            </div>
+
+            {/* BUBBLE FIELD */}
+            <div className="absolute inset-x-4 top-10 bottom-12 z-20">
+              {positionedArenaCoins.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 space-y-2">
+                  <Sparkles className="w-8 h-8 text-emerald-400/50 animate-pulse" />
+                  <p className="text-xs font-medium">No active held Solana assets ≥ $1 found in wallet.</p>
+                  <p className="text-[10px] text-slate-600">Connect a wallet or deposit tokens to view your Arena.</p>
+                </div>
+              ) : (
+                positionedArenaCoins.map(({ coin, diameter, xPercent, topPercent }) => {
+                  const change = coin.change24h || 0;
+                  const DEAD_ZONE = 1.5;
+                  const mag = Math.abs(change);
+
+                  // Owning group color
+                  const owningGroup = groups.find((g) => g.memberMints.includes(coin.mint));
+                  const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
+
+                  const isSelected = selectedMint === coin.mint;
+                  const isDead = coin.price === 0 || change <= -50;
+                  const isWinner = !isDead && change > DEAD_ZONE;
+                  const isLoser = !isDead && change < -DEAD_ZONE;
+
+                  // Eye & Face sizing
+                  const eyeSize = Math.max(8, Math.round(diameter * 0.26));
+                  const pupilSize = Math.max(4, Math.round(eyeSize * 0.5));
+                  const mouthWidth = Math.max(10, Math.round(diameter * 0.35));
+
+                  return (
+                    <div
+                      key={coin.mint}
+                      onClick={() => setSelectedMint((prev) => (prev === coin.mint ? null : coin.mint))}
+                      style={{
+                        top: `${topPercent}%`,
+                        left: `${xPercent}%`,
+                        transform: 'translate(-50%, -50%)',
+                        width: `${diameter}px`,
+                        height: `${diameter}px`,
+                      }}
+                      className={`absolute cursor-pointer rounded-full transition-all duration-300 flex flex-col items-center justify-center border shadow-lg ${
+                        isWinner
+                          ? 'animate-winner-bob'
+                          : isLoser
+                          ? 'animate-loser-wobble'
+                          : ''
+                      } ${
+                        isSelected
+                          ? 'ring-4 ring-amber-400 ring-offset-2 ring-offset-slate-950 scale-110 z-40'
+                          : 'hover:scale-110 hover:z-30'
+                      } ${
+                        gColors
+                          ? `${gColors.bgSolid} text-white border-white/40`
+                          : 'bg-slate-800 text-slate-200 border-slate-600/70'
+                      } ${
+                        isWinner
+                          ? `shadow-[0_0_${Math.min(22, 10 + Math.round(mag))}px_rgba(251,191,36,0.5)]`
+                          : ''
+                      } ${
+                        isDead ? 'opacity-40 grayscale pointer-events-auto' : ''
+                      }`}
+                      title={`${coin.symbol}: ${change >= 0 ? '+' : ''}${change.toFixed(1)}% ($${coin.usdValue.toFixed(2)})`}
+                    >
+                      {/* WINGS FOR WINNERS */}
+                      {isWinner && (
+                        <>
+                          <div className="absolute top-1/2 -left-3.5 -translate-y-1/2 pointer-events-none z-0 animate-wing-flap-left">
+                            <svg viewBox="0 0 24 24" className="w-4 h-4 text-amber-400 fill-amber-400/90 drop-shadow-[0_0_4px_rgba(251,191,36,0.6)]">
+                              <path d="M22 12C15 12 10 6 2 2C6 10 10 16 22 12Z" />
+                            </svg>
+                          </div>
+                          <div className="absolute top-1/2 -right-3.5 -translate-y-1/2 pointer-events-none z-0 animate-wing-flap-right">
+                            <svg viewBox="0 0 24 24" className="w-4 h-4 text-amber-400 fill-amber-400/90 drop-shadow-[0_0_4px_rgba(251,191,36,0.6)]">
+                              <path d="M2 12C9 12 14 6 22 2C18 10 14 16 2 12Z" />
+                            </svg>
+                          </div>
+                        </>
+                      )}
+
+                      {/* FLAME LICKS FOR DEEP LOSERS */}
+                      {(topPercent >= 70 || change < -10) && !isDead && (
+                        <div className="absolute -bottom-2 inset-x-0 flex justify-center gap-0.5 pointer-events-none z-20 animate-bounce">
+                          <span className="text-[10px]">🔥</span>
+                        </div>
+                      )}
+
+                      {/* CRACK OVERLAY FOR DEAD COINS */}
+                      {isDead && (
+                        <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-60 text-slate-950" viewBox="0 0 100 100">
+                          <path d="M 20 20 L 45 50 L 35 80 M 45 50 L 75 40 M 75 40 L 85 75" stroke="currentColor" strokeWidth="4" fill="none" />
+                        </svg>
+                      )}
+
+                      {/* CHARACTER EYES */}
+                      {isDead ? (
+                        <div className="flex items-center justify-center gap-1.5 pointer-events-none z-10 text-slate-950/90 font-black text-xs select-none">
+                          <span>✕</span>
+                          <span>✕</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center gap-1 my-0.5 pointer-events-none z-10">
+                          {/* Left Eye */}
+                          <div
+                            style={{ width: `${eyeSize}px`, height: `${eyeSize}px` }}
+                            className="rounded-full bg-white flex items-center justify-center shadow-inner border border-slate-900/30 overflow-hidden"
+                          >
+                            <div
+                              style={{
+                                width: `${pupilSize}px`,
+                                height: `${pupilSize}px`,
+                                transform: isWinner ? 'translateY(30%)' : isLoser ? 'translateY(-30%)' : 'translateY(0)',
+                              }}
+                              className="rounded-full bg-slate-950 transition-transform duration-300"
+                            />
+                          </div>
+                          {/* Right Eye */}
+                          <div
+                            style={{ width: `${eyeSize}px`, height: `${eyeSize}px` }}
+                            className="rounded-full bg-white flex items-center justify-center shadow-inner border border-slate-900/30 relative overflow-hidden"
+                          >
+                            <div
+                              style={{
+                                width: `${pupilSize}px`,
+                                height: `${pupilSize}px`,
+                                transform: isWinner ? 'translateY(30%)' : isLoser ? 'translateY(-30%)' : 'translateY(0)',
+                              }}
+                              className="rounded-full bg-slate-950 transition-transform duration-300"
+                            />
+                            {/* Sweat Drop */}
+                            {isLoser && (
+                              <span className="absolute -top-1 -right-1 text-[8px] animate-pulse">💧</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* CHARACTER MOUTH */}
+                      <div className="pointer-events-none z-10 flex justify-center -mt-0.5">
+                        {isWinner ? (
+                          <svg width={mouthWidth} height="7" viewBox="0 0 20 7" fill="none">
+                            <path d="M 2 2 Q 10 8 18 2" stroke="rgba(15,23,42,0.85)" strokeWidth="2.5" strokeLinecap="round" />
+                          </svg>
+                        ) : isLoser ? (
+                          <svg width={mouthWidth} height="7" viewBox="0 0 20 7" fill="none">
+                            <path d="M 2 6 Q 10 1 18 6" stroke="rgba(15,23,42,0.85)" strokeWidth="2.5" strokeLinecap="round" />
+                          </svg>
+                        ) : isDead ? (
+                          <svg width={mouthWidth} height="6" viewBox="0 0 20 6" fill="none">
+                            <path d="M 2 2 L 7 5 L 12 2 L 17 5" stroke="rgba(15,23,42,0.85)" strokeWidth="2" strokeLinecap="round" />
+                          </svg>
+                        ) : (
+                          <svg width={mouthWidth} height="5" viewBox="0 0 20 5" fill="none">
+                            <path d="M 4 2.5 L 16 2.5" stroke="rgba(15,23,42,0.85)" strokeWidth="2.5" strokeLinecap="round" />
+                          </svg>
+                        )}
+                      </div>
+
+                      {/* SYMBOL + % PILL BELOW BUBBLE */}
+                      <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-slate-900/90 border border-slate-700/80 px-1.5 py-0.5 rounded-full shadow-md z-20 pointer-events-none whitespace-nowrap">
+                        <span className="font-extrabold text-[8px] text-white tracking-tight">{coin.symbol}</span>
+                        <span
+                          className={`text-[7px] font-mono font-bold px-1 rounded-full ${
+                            change >= 0 ? 'bg-emerald-950/80 text-emerald-300' : 'bg-rose-950/80 text-rose-300'
+                          }`}
+                        >
+                          {change >= 0 ? '+' : ''}{change.toFixed(0)}%
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+          </div>
+
+          {/* ALWAYS-VISIBLE SELECTION BAR STRIP BELOW ARENA */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5 shadow-xl min-h-[56px] flex items-center justify-between gap-2">
+            {selectedCoinObj ? (
+              <>
+                <div className="flex items-center gap-2 min-w-0">
+                  <TokenLogo logoURI={selectedCoinObj.logoURI} symbol={selectedCoinObj.symbol} size="sm" />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <strong className="text-white font-extrabold text-xs">{selectedCoinObj.symbol}</strong>
+                      <span className={`text-[9px] font-bold font-mono px-1 rounded ${
+                        (selectedCoinObj.change24h || 0) >= 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'
+                      }`}>
+                        {(selectedCoinObj.change24h || 0) >= 0 ? '+' : ''}{(selectedCoinObj.change24h || 0).toFixed(1)}%
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono block truncate">
+                      ${selectedCoinObj.usdValue.toFixed(2)} ({selectedCoinObj.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} units)
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => handleSellCoin(selectedCoinObj)}
+                    className="bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                  >
+                    ⚡ Sell
+                  </button>
+
+                  <button
+                    onClick={() => handleBuyCoin(selectedCoinObj)}
+                    className="bg-sky-500/20 hover:bg-sky-500/35 text-sky-300 border border-sky-500/40 text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                  >
+                    📥 Buy
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      if (selectedCoinGroup) {
+                        onSelectGroup(selectedCoinGroup.id);
+                      } else {
+                        onNavigateToWallet();
+                      }
+                    }}
+                    className="bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 text-[10px] font-bold px-2 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                  >
+                    Go to basket →
+                  </button>
+
+                  <button
+                    onClick={() => setSelectedMint(null)}
+                    className="p-1 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    title="Deselect"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 text-slate-500 text-xs">
+                  <Sparkles className="w-3.5 h-3.5 text-slate-600" />
+                  <span>Click a bubble in the arena to select a coin</span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0 opacity-40 pointer-events-none">
+                  <button className="bg-slate-800 text-slate-400 text-[10px] font-bold px-2.5 py-1 rounded-lg">⚡ Sell</button>
+                  <button className="bg-slate-800 text-slate-400 text-[10px] font-bold px-2.5 py-1 rounded-lg">📥 Buy</button>
+                  <button className="bg-slate-800 text-slate-400 text-[10px] font-bold px-2 py-1 rounded-lg">Go to basket →</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
-      </div>
+
+          {/* TRADE PANEL (Always Visible, Empty at rest) */}
+          <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl flex flex-col justify-between space-y-3 relative">
+            <div>
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+                <div className="flex items-center gap-1.5">
+                  <Zap className="w-4 h-4 text-amber-400" />
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">Rebalance Swap Panel</h4>
+                </div>
+                <span className="text-[10px] font-mono text-slate-400">Slippage: {slippageBps / 100}%</span>
+              </div>
+
+              {/* FROM SLOT */}
+              <div className="bg-slate-950 border border-slate-850 rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  <span>From (Pay)</span>
+                  {fromToken && fromToken.amountHuman !== undefined && (
+                    <span className="font-mono text-slate-400">
+                      Bal: {fromToken.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  {/* From Token Selector Button */}
+                  <div className="relative">
+                    <button
+                      onClick={() => {
+                        setShowFromDropdown(!showFromDropdown);
+                        setShowIntoDropdown(false);
+                      }}
+                      className="bg-slate-900 hover:bg-slate-850 border border-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors"
+                    >
+                      {fromToken ? (
+                        <>
+                          <TokenLogo logoURI={fromToken.logoURI} symbol={fromToken.symbol} size="sm" />
+                          <span>{fromToken.symbol}</span>
+                        </>
+                      ) : (
+                        <span className="text-slate-400">Select token</span>
+                      )}
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                    </button>
+
+                    {/* From Dropdown List */}
+                    {showFromDropdown && (
+                      <div className="absolute left-0 mt-1 w-56 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl z-50 p-1.5 space-y-1 max-h-56 overflow-y-auto">
+                        <div className="px-2 py-1 text-[9px] font-bold uppercase text-slate-500">Your Held Assets (≥ $1)</div>
+                        {arenaCoins.length === 0 ? (
+                          <div className="p-2 text-xs text-slate-500 italic">No holdings ≥ $1 found</div>
+                        ) : (
+                          arenaCoins.map((coin) => (
+                            <button
+                              key={coin.mint}
+                              onClick={() => {
+                                handleSellCoin(coin);
+                                setShowFromDropdown(false);
+                              }}
+                              className="w-full text-left p-1.5 hover:bg-slate-850 rounded-lg flex items-center justify-between gap-2 text-xs transition-colors cursor-pointer"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <TokenLogo logoURI={coin.logoURI} symbol={coin.symbol} size="sm" />
+                                <span className="font-bold text-white truncate">{coin.symbol}</span>
+                              </div>
+                              <span className="text-[10px] font-mono text-slate-400">
+                                ${coin.usdValue.toFixed(2)}
+                              </span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Amount Input */}
+                  <div className="flex flex-col items-end">
+                    <input
+                      type="number"
+                      placeholder="0.0"
+                      value={fromAmount}
+                      onChange={(e) => setFromAmount(e.target.value)}
+                      className="w-full text-right bg-transparent text-white font-mono font-bold text-base focus:outline-none placeholder:text-slate-600"
+                    />
+                    {fromToken && fromAmount && !isNaN(parseFloat(fromAmount)) && parseFloat(fromAmount) > 0 && (
+                      <div className="text-[10px] text-slate-400 text-right font-mono pt-0.5">
+                        ≈ ${(parseFloat(fromAmount) * (fromToken.price || prices[fromToken.mint]?.price || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Quick Presets for From */}
+                {fromToken && fromToken.amountHuman !== undefined && fromToken.amountHuman > 0 && (
+                  <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-slate-900">
+                    <button
+                      onClick={() => setFromAmount((fromToken.amountHuman! * 0.25).toFixed(6))}
+                      className="text-[9px] font-mono font-bold bg-slate-900 hover:bg-slate-850 text-slate-400 px-1.5 py-0.5 rounded cursor-pointer"
+                    >
+                      25%
+                    </button>
+                    <button
+                      onClick={() => setFromAmount((fromToken.amountHuman! * 0.5).toFixed(6))}
+                      className="text-[9px] font-mono font-bold bg-slate-900 hover:bg-slate-850 text-slate-400 px-1.5 py-0.5 rounded cursor-pointer"
+                    >
+                      50%
+                    </button>
+                    <button
+                      onClick={() => setFromAmount(fromToken.amountHuman!.toString())}
+                      className="text-[9px] font-mono font-bold bg-slate-900 hover:bg-slate-850 text-emerald-400 px-1.5 py-0.5 rounded cursor-pointer"
+                    >
+                      MAX
+                    </button>
+                    {(fromToken.change24h || 0) > 0 && fromToken.usdValue && fromToken.price ? (
+                      <button
+                        onClick={() => {
+                          const factor = 1 + ((fromToken.change24h || 0) / 100);
+                          const gainUsd = fromToken.usdValue! - (fromToken.usdValue! / factor);
+                          const gainUnits = gainUsd / fromToken.price!;
+                          setFromAmount(gainUnits.toFixed(6));
+                        }}
+                        className="text-[9px] font-mono font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 px-1.5 py-0.5 rounded cursor-pointer flex items-center gap-0.5"
+                        title="Prefill 24h dollar move converted to token units"
+                      >
+                        ⚡ Harvest Gains
+                      </button>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+
+              {/* Swap Switch Divider */}
+              <div className="flex justify-center -my-1.5 relative z-10 pointer-events-none">
+                <div className="bg-slate-900 border border-slate-800 p-1 rounded-full text-slate-400 shadow">
+                  <ArrowDownUp className="w-3.5 h-3.5" />
+                </div>
+              </div>
+
+              {/* INTO SLOT */}
+              <div className="bg-slate-950 border border-slate-850 rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  <span>Into (Receive)</span>
+                  <span className="text-[10px] text-slate-500 font-mono">Read-only estimate</span>
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  {/* Into Token Selector Button */}
+                  <div className="relative">
+                    <button
+                      onClick={() => {
+                        setShowIntoDropdown(!showIntoDropdown);
+                        setShowFromDropdown(false);
+                      }}
+                      className="bg-slate-900 hover:bg-slate-850 border border-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors"
+                    >
+                      {intoToken ? (
+                        <>
+                          <TokenLogo logoURI={intoToken.logoURI} symbol={intoToken.symbol} size="sm" />
+                          <span>{intoToken.symbol}</span>
+                        </>
+                      ) : (
+                        <span className="text-slate-400">Select token</span>
+                      )}
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                    </button>
+
+                    {/* Into Dropdown List with Search */}
+                    {showIntoDropdown && (
+                      <div className="absolute left-0 mt-1 w-64 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl z-50 p-2 space-y-2">
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            placeholder="Search name or mint..."
+                            value={intoSearchQuery}
+                            onChange={(e) => setIntoSearchQuery(e.target.value)}
+                            className="w-full pl-8 pr-2 py-1 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white placeholder:text-slate-500 focus:outline-none"
+                            autoFocus
+                          />
+                        </div>
+
+                        <div className="max-h-52 overflow-y-auto space-y-1">
+                          {filteredIntoTokens.length === 0 ? (
+                            <div className="p-2 text-xs text-slate-500 italic">No matching tokens</div>
+                          ) : (
+                            filteredIntoTokens.map((t) => (
+                              <button
+                                key={t.address}
+                                onClick={() => {
+                                  setIntoToken({
+                                    mint: t.address,
+                                    symbol: t.symbol,
+                                    logoURI: t.logoURI,
+                                    decimals: t.decimals || 6,
+                                  });
+                                  setShowIntoDropdown(false);
+                                }}
+                                className="w-full text-left p-1.5 hover:bg-slate-850 rounded-lg flex items-center gap-2 text-xs transition-colors cursor-pointer"
+                              >
+                                <TokenLogo logoURI={t.logoURI} symbol={t.symbol} size="sm" />
+                                <div className="min-w-0">
+                                  <div className="font-bold text-white truncate">{t.symbol}</div>
+                                  <div className="text-[9px] text-slate-500 truncate">{t.name || t.address}</div>
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Quoted Output Display */}
+                  <div className="text-right">
+                    <div className="font-mono font-bold text-base text-emerald-400">
+                      {quoting ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-emerald-400 ml-auto" />
+                      ) : quote && quote.outAmount ? (
+                        (parseInt(quote.outAmount, 10) / Math.pow(10, intoToken?.decimals || 6)).toLocaleString(undefined, { maximumFractionDigits: 6 })
+                      ) : (
+                        <span className="text-slate-600">0.0</span>
+                      )}
+                    </div>
+                    {intoToken && (
+                      <div className="text-[10px] text-slate-400 font-mono pt-0.5">
+                        {quote && quote.outAmount ? (
+                          (() => {
+                            const units = parseInt(quote.outAmount, 10) / Math.pow(10, intoToken.decimals || 6);
+                            const price = prices[intoToken.mint]?.price || intoToken.price || 0;
+                            return price > 0
+                              ? `≈ $${(units * price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : '≈ $0.00';
+                          })()
+                        ) : (
+                          '≈ $0.00'
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Quote Error or Route Info */}
+              {quoteError && (
+                <div className="text-[10px] text-rose-400 flex items-center gap-1 mt-1 px-1">
+                  <AlertCircle className="w-3 h-3 shrink-0" />
+                  <span>{quoteError}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Execute Button & Messages */}
+            <div className="space-y-2 pt-2 border-t border-slate-850">
+              {swapSuccessMsg && (
+                <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs p-2.5 rounded-xl flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{swapSuccessMsg}</span>
+                </div>
+              )}
+
+              {swapErrorMsg && (
+                <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs p-2.5 rounded-xl flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span className="truncate">{swapErrorMsg}</span>
+                </div>
+              )}
+
+              <button
+                onClick={handleExecuteSwap}
+                disabled={!fromToken || !intoToken || !fromAmount || !quote || swapping || quoting}
+                className="w-full bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-black text-xs py-2.5 rounded-xl transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {swapping ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Executing Swap...</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-4 h-4 fill-slate-950" />
+                    <span>
+                      {!fromToken || !intoToken
+                        ? 'Select Pair to Swap'
+                        : !fromAmount || parseFloat(fromAmount) <= 0
+                        ? 'Enter From Amount'
+                        : quoting
+                        ? 'Fetching Quote...'
+                        : !quote
+                        ? 'No Route Available'
+                        : `Swap ${fromToken.symbol} → ${intoToken.symbol}`}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+        </div>
+      )}
 
       {/* Portfolio Summary / CTA Strip */}
       {landingMode ? (
@@ -341,7 +1278,6 @@ export default function PriceView({
                                         </span>
                                       )}
                                     </div>
-                                    {/* Mint title on hover */}
                                     <span className="text-[10px] text-slate-500 block truncate max-w-[120px]" title={item.mint}>
                                       {item.mint.substring(0, 4)}...{item.mint.substring(item.mint.length - 4)}
                                     </span>
@@ -500,7 +1436,7 @@ export default function PriceView({
         </>
       )}
 
-      {/* Explanatory Intuition Card: Clean & Tight */}
+      {/* Explanatory Intuition Card */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl">
         <div className="flex items-start gap-3">
           <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg shrink-0">
