@@ -1534,6 +1534,30 @@ function Dashboard() {
                       </div>
                     </div>
 
+                    {/* INLINE QUICK ACTIONS ON LIST VIEW ROW */}
+                    {item.mint !== 'So11111111111111111111111111111111111111112' && !linkingGroupId && (
+                      <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                        {item.amount === 0 ? (
+                          <button
+                            onClick={() => handleOpenCloseEmptyModal(item)}
+                            className="bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 hover:border-emerald-500/60 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 hover:scale-[1.02] active:scale-[0.98] shadow-sm"
+                            title={`Close empty account and reclaim ~${getRentSolString(item.mint)} SOL rent`}
+                          >
+                            <span>🧹 Reclaim Rent</span>
+                            <span className="text-[10px] font-mono text-emerald-300 font-extrabold">~{getRentSolString(item.mint)} SOL</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleInitiateConvert(item)}
+                            className="bg-amber-500/10 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 hover:border-amber-500/60 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 hover:scale-[1.02] active:scale-[0.98] shadow-sm"
+                            title={`Convert ${item.symbol} to SOL via Jupiter & reclaim account rent`}
+                          >
+                            <span>⚡ Convert to SOL</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                     <div className="flex items-center gap-3 flex-shrink-0">
                       <div className="text-right flex items-center gap-2 font-mono">
                         <span className="font-bold text-white text-xs">
