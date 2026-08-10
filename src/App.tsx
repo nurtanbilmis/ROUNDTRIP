@@ -11,6 +11,7 @@ import ConvertModal from './components/ConvertModal';
 import AllocationView from './components/AllocationView';
 import PriceView from './components/PriceView';
 import HistoryView from './components/HistoryView';
+import LeaderboardView from './components/LeaderboardView';
 import ConfirmModal from './components/ConfirmModal';
 import { PRESETS, Preset } from './presets';
 import PresetVerifier from './components/PresetVerifier';
@@ -137,7 +138,7 @@ function Dashboard() {
           type: 'convert_sol',
           item,
           title: `Convert ${item.symbol} to SOL?`,
-          message: `This will sell your full ${item.symbol} balance (${item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })} units, ~$${item.usdValue.toFixed(2)}) for SOL via Jupiter, and then close the emptied token account to also return ~${rentSolStr} SOL rent to your wallet.`,
+          message: `This will sell your full ${item.symbol} balance (${item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${item.symbol}, ~$${item.usdValue.toFixed(2)}) for SOL via Jupiter, and then close the emptied token account to also return ~${rentSolStr} SOL rent to your wallet.`,
           confirmText: 'Convert & Reclaim Rent',
           cancelText: 'Cancel',
           isScary: false,
@@ -378,7 +379,7 @@ function Dashboard() {
   const [loadingPrices, setLoadingPrices] = useState(false);
 
   // Nav routing states
-  const [activeTab, setActiveTab] = useState<'wallet' | 'prices' | 'history'>('wallet');
+  const [activeTab, setActiveTab] = useState<'wallet' | 'prices' | 'history' | 'leaderboard'>('wallet');
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null); // Null means Screen 1, otherwise active Screen 2
   const [linkingGroupId, setLinkingGroupId] = useState<string | null>(null); // Group currently in Direct Link Mode
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
@@ -776,7 +777,6 @@ function Dashboard() {
     });
 
     const totalGroupUsd = items.reduce((sum, val) => sum + val, 0);
-    const targetWeight = members.length > 0 ? 100 / members.length : 0;
 
     let maxDrift = 0;
     members.forEach((mint, i) => {
@@ -784,7 +784,10 @@ function Dashboard() {
       if (!meta || meta.decimals === undefined) return;
       const usdVal = items[i];
       const currentWeight = totalGroupUsd > 0 ? (usdVal / totalGroupUsd) * 100 : 0;
-      const drift = Math.abs(currentWeight - targetWeight);
+      const targetPct = (g.targetWeights && g.targetWeights[mint] !== undefined)
+        ? g.targetWeights[mint] * 100
+        : (members.length > 0 ? 100 / members.length : 0);
+      const drift = Math.abs(currentWeight - targetPct);
       if (drift > maxDrift) {
         maxDrift = drift;
       }
@@ -958,6 +961,16 @@ function Dashboard() {
               >
                 Historical ledger logs
               </button>
+              <button
+                onClick={() => {
+                  setActiveTab('leaderboard');
+                }}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeTab === 'leaderboard' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Leaderboard
+              </button>
             </div>
           </div>
         </div>
@@ -1114,6 +1127,12 @@ function Dashboard() {
                 Connect Solana Wallet
               </button>
             </div>
+          </main>
+        )}
+
+        {activeTab === 'leaderboard' && (
+          <main className="max-w-6xl mx-auto px-6 py-12 flex-grow flex flex-col justify-start space-y-6 w-full">
+            <LeaderboardView rpcUrl={rpcUrl} />
           </main>
         )}
 
@@ -1413,6 +1432,17 @@ function Dashboard() {
             >
               Historical ledger logs
             </button>
+            <button
+              onClick={() => {
+                setSelectedGroupId(null);
+                setActiveTab('leaderboard');
+              }}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                activeTab === 'leaderboard' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Leaderboard
+            </button>
           </div>
 
           <div className="flex items-center gap-3">
@@ -1507,7 +1537,7 @@ function Dashboard() {
                         <strong className="text-white font-extrabold text-xs">{item.symbol}</strong>
                         
                         <span className="text-[10px] text-cyan-400/90 font-mono font-medium">
-                          {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} units
+                          {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })}
                         </span>
 
                         {owningGroup ? (
@@ -2039,6 +2069,10 @@ function Dashboard() {
                 prices={prices}
                 onClearHistory={() => setSnapshots([])}
               />
+            )}
+
+            {activeTab === 'leaderboard' && (
+              <LeaderboardView rpcUrl={rpcUrl} />
             )}
           </>
         )}

@@ -21,6 +21,7 @@ import { TokenBalance, LinkGroup, Token, getGroupColorClasses, formatPrice } fro
 import TokenLogo from './TokenLogo';
 import { useSolanaWallet } from './WalletProvider';
 import { fetchQuote, fetchVerifiedTokens } from '../jupiter';
+import EpicLavaBridgeBackground from './EpicLavaBridgeBackground';
 
 // Helper for stable organic placement per token
 const seededRand = (s: string) => {
@@ -389,7 +390,8 @@ export default function PriceView({
       const xPercent = 8 + seededRand(coin.mint) * 84;
 
       const share = totalHoldingsValue > 0 ? coin.usdValue / totalHoldingsValue : 0;
-      const diameter = Math.max(32, Math.min(74, Math.round(32 + share * 110)));
+      const sizeFactor = Math.sqrt(share);
+      const diameter = Math.max(38, Math.min(84, Math.round(38 + sizeFactor * 46)));
 
       const x = (xPercent / 100) * W;
       const y = (topPercent / 100) * H;
@@ -540,80 +542,8 @@ export default function PriceView({
             {/* THE CANVAS (Hero Arena, ~600px - "HODLers & Lava") */}
             <div className="relative h-[600px] rounded-2xl border overflow-hidden shadow-2xl flex flex-col justify-between p-4 transition-all duration-500 bg-slate-950 border-slate-800">
             
-            {/* SKY LAYER (Top Half) */}
-            <div className={`absolute inset-x-0 top-0 h-1/2 pointer-events-none transition-all duration-700 ${
-              maxAbsChange > 20
-                ? 'bg-gradient-to-b from-slate-950 via-indigo-950/80 to-rose-950/40'
-                : 'bg-gradient-to-b from-indigo-950/90 via-slate-950 to-amber-950/20'
-            }`} />
-
-            {/* LAVA PIT LAYER (Bottom Half) */}
-            <div className="absolute inset-x-0 bottom-0 h-1/2 pointer-events-none transition-all duration-700 bg-gradient-to-b from-slate-950 via-amber-950/60 to-rose-900/80 overflow-hidden">
-              {/* Glowing magma floor */}
-              <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-orange-500/30 via-amber-500/15 to-transparent blur-md pointer-events-none" />
-
-              {/* Lava Blobs */}
-              {[...Array(8)].map((_, i) => (
-                <div
-                  key={`blob-${i}`}
-                  style={{
-                    left: `${8 + i * 11.5}%`,
-                    animationDelay: `${(i * 0.6) % 3}s`,
-                    animationDuration: `${3 + (i % 3) * 0.8}s`,
-                  }}
-                  className="absolute bottom-0 w-3.5 h-3.5 rounded-full bg-gradient-to-t from-orange-500 to-amber-300 blur-sm opacity-70 animate-lava-rise pointer-events-none"
-                />
-              ))}
-
-              {/* Ember particles */}
-              {[...Array(7)].map((_, i) => (
-                <div
-                  key={`ember-${i}`}
-                  style={{
-                    left: `${12 + i * 13}%`,
-                    animationDelay: `${(i * 0.4) % 2.5}s`,
-                    animationDuration: `${2.2 + (i % 2) * 0.6}s`,
-                  }}
-                  className="absolute bottom-1 w-1.5 h-1.5 rounded-full bg-amber-300 shadow-[0_0_6px_#f59e0b] animate-ember-fly pointer-events-none"
-                />
-              ))}
-            </div>
-
-            {/* ROPE & PLANK SUSPENSION BRIDGE (At 50% parity line) */}
-            <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 z-10 pointer-events-none">
-              <svg className="w-full h-6 overflow-visible" viewBox="0 0 1000 26" preserveAspectRatio="none">
-                {/* Anchor Posts */}
-                <rect x="0" y="0" width="8" height="26" rx="2" fill="#3f1d0b" stroke="#78350f" strokeWidth="1" />
-                <rect x="992" y="0" width="8" height="26" rx="2" fill="#3f1d0b" stroke="#78350f" strokeWidth="1" />
-                {/* Top Rope */}
-                <path d="M 4 3 Q 500 9 996 3" stroke="#b45309" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-                {/* Bottom Rope */}
-                <path d="M 4 21 Q 500 25 996 21" stroke="#b45309" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-                {/* Vertical Wooden Planks */}
-                {[...Array(48)].map((_, idx) => {
-                  const x = idx * 20.5 + 8;
-                  const normX = x / 1000;
-                  const sag = 5 * Math.sin(normX * Math.PI);
-                  return (
-                    <rect
-                      key={`plank-${idx}`}
-                      x={x}
-                      y={2 + sag}
-                      width="12"
-                      height="18"
-                      rx="1.5"
-                      fill="#582f0e"
-                      stroke="#854d0e"
-                      strokeWidth="1"
-                      opacity="0.95"
-                    />
-                  );
-                })}
-              </svg>
-              <div className="absolute left-3 top-1/2 -translate-y-1/2 bg-slate-900/90 border border-amber-800/80 text-amber-200 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-0.5 rounded-md shadow-lg z-20 flex items-center gap-1">
-                <span>🌉</span> 0.0% PARITY
-              </div>
-            </div>
+            {/* EPIC LAVA BRIDGE & COSMIC SKY BACKGROUND */}
+            <EpicLavaBridgeBackground maxAbsChange={maxAbsChange} />
 
             {/* Mood Badge (Top Right) */}
             <div className="relative z-10 flex justify-end text-[10px] font-extrabold uppercase tracking-widest pointer-events-none">
@@ -649,21 +579,36 @@ export default function PriceView({
                 positionedArenaCoins.map(({ coin, diameter, xPercent, topPercent }) => {
                   const change = coin.change24h || 0;
                   const DEAD_ZONE = 1.5;
-                  const mag = Math.abs(change);
 
-                  // Owning group color
+                  // Owning group color / basket
                   const owningGroup = groups.find((g) => g.memberMints.includes(coin.mint));
                   const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
 
                   const isSelected = selectedMint === coin.mint;
                   const isDead = coin.price === 0 || change <= -50;
-                  const isWinner = !isDead && change > DEAD_ZONE;
-                  const isLoser = !isDead && change < -DEAD_ZONE;
+                  const isSky = topPercent < 48;
+                  const isLava = topPercent > 52;
+                  const isWinner = !isDead && (change > DEAD_ZONE || isSky);
+                  const isLoser = !isDead && (change < -DEAD_ZONE || isLava);
+
+                  // Zone background & shadow classes matching the epic scene
+                  let zoneStyleClass = 'bg-gradient-to-br from-slate-900 via-stone-900 to-slate-950 border-slate-700/80 shadow-[0_0_12px_rgba(217,119,6,0.35)]';
+
+                  if (isDead) {
+                    zoneStyleClass = 'bg-gradient-to-br from-stone-950 to-neutral-900 border-stone-800 shadow-[0_0_8px_rgba(0,0,0,0.9)] opacity-60 grayscale';
+                  } else if (isSky) {
+                    zoneStyleClass = 'bg-gradient-to-br from-indigo-950/95 via-purple-950/90 to-slate-900/95 border-indigo-400/60 shadow-[0_0_20px_rgba(147,51,234,0.6)]';
+                  } else if (isLava) {
+                    zoneStyleClass = 'bg-gradient-to-br from-rose-950/95 via-amber-950/90 to-slate-950/95 border-orange-500/70 shadow-[0_0_24px_rgba(249,115,22,0.85)]';
+                  }
+
+                  // Override with basket solid color if assigned
+                  const basketBorderRing = gColors ? `ring-2 ${gColors.ring} ${gColors.border}` : '';
 
                   // Eye & Face sizing
-                  const eyeSize = Math.max(8, Math.round(diameter * 0.26));
+                  const eyeSize = Math.max(9, Math.round(diameter * 0.25));
                   const pupilSize = Math.max(4, Math.round(eyeSize * 0.5));
-                  const mouthWidth = Math.max(10, Math.round(diameter * 0.35));
+                  const mouthWidth = Math.max(12, Math.round(diameter * 0.35));
 
                   return (
                     <div
@@ -676,7 +621,7 @@ export default function PriceView({
                         width: `${diameter}px`,
                         height: `${diameter}px`,
                       }}
-                      className={`absolute cursor-pointer rounded-full transition-all duration-300 flex flex-col items-center justify-center border shadow-lg ${
+                      className={`absolute cursor-pointer rounded-full transition-all duration-300 flex flex-col items-center justify-center border ${zoneStyleClass} ${basketBorderRing} ${
                         isWinner
                           ? 'animate-winner-bob'
                           : isLoser
@@ -686,37 +631,45 @@ export default function PriceView({
                         isSelected
                           ? 'ring-4 ring-amber-400 ring-offset-2 ring-offset-slate-950 scale-110 z-40'
                           : 'hover:scale-110 hover:z-30'
-                      } ${
-                        gColors
-                          ? `${gColors.bgSolid} text-white border-white/40`
-                          : 'bg-slate-800 text-slate-200 border-slate-600/70'
-                      } ${
-                        isWinner
-                          ? `shadow-[0_0_${Math.min(22, 10 + Math.round(mag))}px_rgba(251,191,36,0.5)]`
-                          : ''
-                      } ${
-                        isDead ? 'opacity-40 grayscale pointer-events-auto' : ''
                       }`}
                       title={`${coin.symbol}: ${change >= 0 ? '+' : ''}${change.toFixed(1)}% ($${coin.usdValue.toFixed(2)})`}
                     >
-                      {/* WINGS FOR WINNERS */}
+                      {/* BASKET TAG BADGE ABOVE BUBBLE */}
+                      {owningGroup && gColors && (
+                        <div
+                          className={`absolute -top-3 left-1/2 -translate-x-1/2 text-[7px] font-mono font-black uppercase tracking-wider px-1.5 py-0.2 rounded-full border shadow-lg flex items-center gap-1 z-30 whitespace-nowrap ${gColors.bgSolid} text-white border-white/50 backdrop-blur-md`}
+                          title={`Basket: ${owningGroup.name}`}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse shrink-0" />
+                          <span>{owningGroup.name}</span>
+                        </div>
+                      )}
+
+                      {/* WINGS FOR WINNERS IN COSMIC SKY */}
                       {isWinner && (
                         <>
                           <div className="absolute top-1/2 -left-3.5 -translate-y-1/2 pointer-events-none z-0 animate-wing-flap-left">
-                            <svg viewBox="0 0 24 24" className="w-4 h-4 text-amber-400 fill-amber-400/90 drop-shadow-[0_0_4px_rgba(251,191,36,0.6)]">
+                            <svg viewBox="0 0 24 24" className="w-4 h-4 text-indigo-300 fill-indigo-300/90 drop-shadow-[0_0_6px_rgba(168,85,247,0.8)]">
                               <path d="M22 12C15 12 10 6 2 2C6 10 10 16 22 12Z" />
                             </svg>
                           </div>
                           <div className="absolute top-1/2 -right-3.5 -translate-y-1/2 pointer-events-none z-0 animate-wing-flap-right">
-                            <svg viewBox="0 0 24 24" className="w-4 h-4 text-amber-400 fill-amber-400/90 drop-shadow-[0_0_4px_rgba(251,191,36,0.6)]">
+                            <svg viewBox="0 0 24 24" className="w-4 h-4 text-indigo-300 fill-indigo-300/90 drop-shadow-[0_0_6px_rgba(168,85,247,0.8)]">
                               <path d="M2 12C9 12 14 6 22 2C18 10 14 16 2 12Z" />
                             </svg>
                           </div>
                         </>
                       )}
 
-                      {/* FLAME LICKS FOR DEEP LOSERS */}
-                      {(topPercent >= 70 || change < -10) && !isDead && (
+                      {/* STAR SPARKLE FOR TOP SKY WINNERS */}
+                      {isSky && change > 0 && !isDead && (
+                        <div className="absolute -top-1.5 right-0 pointer-events-none z-20 text-[10px] animate-pulse">
+                          ✨
+                        </div>
+                      )}
+
+                      {/* FLAME LICKS FOR DEEP LOSERS IN LAVA */}
+                      {(isLava || change < -5) && !isDead && (
                         <div className="absolute -bottom-2 inset-x-0 flex justify-center gap-0.5 pointer-events-none z-20 animate-bounce">
                           <span className="text-[10px]">🔥</span>
                         </div>
@@ -729,9 +682,14 @@ export default function PriceView({
                         </svg>
                       )}
 
+                      {/* TOKEN LOGO BACKDROP WATERMARK */}
+                      <div className="absolute inset-0 flex items-center justify-center opacity-20 pointer-events-none rounded-full overflow-hidden scale-75">
+                        <TokenLogo logoURI={coin.logoURI} symbol={coin.symbol} size="md" />
+                      </div>
+
                       {/* CHARACTER EYES */}
                       {isDead ? (
-                        <div className="flex items-center justify-center gap-1.5 pointer-events-none z-10 text-slate-950/90 font-black text-xs select-none">
+                        <div className="flex items-center justify-center gap-1.5 pointer-events-none z-10 text-slate-950 font-black text-xs select-none">
                           <span>✕</span>
                           <span>✕</span>
                         </div>
@@ -740,13 +698,13 @@ export default function PriceView({
                           {/* Left Eye */}
                           <div
                             style={{ width: `${eyeSize}px`, height: `${eyeSize}px` }}
-                            className="rounded-full bg-white flex items-center justify-center shadow-inner border border-slate-900/30 overflow-hidden"
+                            className="rounded-full bg-white flex items-center justify-center shadow-inner border border-slate-900/40 overflow-hidden shrink-0"
                           >
                             <div
                               style={{
                                 width: `${pupilSize}px`,
                                 height: `${pupilSize}px`,
-                                transform: isWinner ? 'translateY(30%)' : isLoser ? 'translateY(-30%)' : 'translateY(0)',
+                                transform: isWinner ? 'translateY(25%)' : isLoser ? 'translateY(-25%)' : 'translateY(0)',
                               }}
                               className="rounded-full bg-slate-950 transition-transform duration-300"
                             />
@@ -754,19 +712,19 @@ export default function PriceView({
                           {/* Right Eye */}
                           <div
                             style={{ width: `${eyeSize}px`, height: `${eyeSize}px` }}
-                            className="rounded-full bg-white flex items-center justify-center shadow-inner border border-slate-900/30 relative overflow-hidden"
+                            className="rounded-full bg-white flex items-center justify-center shadow-inner border border-slate-900/40 relative overflow-hidden shrink-0"
                           >
                             <div
                               style={{
                                 width: `${pupilSize}px`,
                                 height: `${pupilSize}px`,
-                                transform: isWinner ? 'translateY(30%)' : isLoser ? 'translateY(-30%)' : 'translateY(0)',
+                                transform: isWinner ? 'translateY(25%)' : isLoser ? 'translateY(-25%)' : 'translateY(0)',
                               }}
                               className="rounded-full bg-slate-950 transition-transform duration-300"
                             />
-                            {/* Sweat Drop */}
+                            {/* Sweat Drop for Losers */}
                             {isLoser && (
-                              <span className="absolute -top-1 -right-1 text-[8px] animate-pulse">💧</span>
+                              <span className="absolute -top-1 -right-1 text-[7px] animate-pulse">💧</span>
                             )}
                           </div>
                         </div>
@@ -776,32 +734,35 @@ export default function PriceView({
                       <div className="pointer-events-none z-10 flex justify-center -mt-0.5">
                         {isWinner ? (
                           <svg width={mouthWidth} height="7" viewBox="0 0 20 7" fill="none">
-                            <path d="M 2 2 Q 10 8 18 2" stroke="rgba(15,23,42,0.85)" strokeWidth="2.5" strokeLinecap="round" />
+                            <path d="M 2 2 Q 10 8 18 2" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" />
                           </svg>
                         ) : isLoser ? (
                           <svg width={mouthWidth} height="7" viewBox="0 0 20 7" fill="none">
-                            <path d="M 2 6 Q 10 1 18 6" stroke="rgba(15,23,42,0.85)" strokeWidth="2.5" strokeLinecap="round" />
+                            <path d="M 2 6 Q 10 1 18 6" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" />
                           </svg>
                         ) : isDead ? (
                           <svg width={mouthWidth} height="6" viewBox="0 0 20 6" fill="none">
-                            <path d="M 2 2 L 7 5 L 12 2 L 17 5" stroke="rgba(15,23,42,0.85)" strokeWidth="2" strokeLinecap="round" />
+                            <path d="M 2 2 L 7 5 L 12 2 L 17 5" stroke="rgba(255,255,255,0.8)" strokeWidth="2" strokeLinecap="round" />
                           </svg>
                         ) : (
                           <svg width={mouthWidth} height="5" viewBox="0 0 20 5" fill="none">
-                            <path d="M 4 2.5 L 16 2.5" stroke="rgba(15,23,42,0.85)" strokeWidth="2.5" strokeLinecap="round" />
+                            <path d="M 4 2.5 L 16 2.5" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" />
                           </svg>
                         )}
                       </div>
 
-                      {/* SYMBOL + % PILL BELOW BUBBLE */}
-                      <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-slate-900/90 border border-slate-700/80 px-1.5 py-0.5 rounded-full shadow-md z-20 pointer-events-none whitespace-nowrap">
+                      {/* SYMBOL + % + USD VALUE PILL BELOW BUBBLE */}
+                      <div className="absolute -bottom-5.5 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-slate-950/90 border border-slate-700/80 px-2 py-0.5 rounded-full shadow-xl z-20 pointer-events-none whitespace-nowrap backdrop-blur-md">
                         <span className="font-extrabold text-[8px] text-white tracking-tight">{coin.symbol}</span>
                         <span
                           className={`text-[7px] font-mono font-bold px-1 rounded-full ${
-                            change >= 0 ? 'bg-emerald-950/80 text-emerald-300' : 'bg-rose-950/80 text-rose-300'
+                            change >= 0 ? 'bg-emerald-950/90 text-emerald-300 border border-emerald-500/30' : 'bg-rose-950/90 text-rose-300 border border-rose-500/30'
                           }`}
                         >
-                          {change >= 0 ? '+' : ''}{change.toFixed(0)}%
+                          {change >= 0 ? '+' : ''}{change.toFixed(1)}%
+                        </span>
+                        <span className="text-[7px] font-mono text-slate-300 font-semibold ml-0.5">
+                          ${coin.usdValue >= 1000 ? `${(coin.usdValue / 1000).toFixed(1)}k` : coin.usdValue.toFixed(0)}
                         </span>
                       </div>
                     </div>
@@ -828,7 +789,7 @@ export default function PriceView({
                       </span>
                     </div>
                     <span className="text-[10px] text-slate-400 font-mono block truncate">
-                      ${selectedCoinObj.usdValue.toFixed(2)} ({selectedCoinObj.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} units)
+                      ${selectedCoinObj.usdValue.toFixed(2)} ({selectedCoinObj.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${selectedCoinObj.symbol})
                     </span>
                   </div>
                 </div>
