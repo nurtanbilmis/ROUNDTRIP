@@ -702,6 +702,29 @@ export default function AllocationView({
   // Group Color styling mapping
   const groupColors = getGroupColorClasses(group.color);
 
+  // Compute creation baseline snapshot for "Value Since Creation"
+  const sortedGroupSnapshots = [...(groupSnapshots || [])]
+    .filter((s) => s && s.groupId === group.id)
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+  const cleanCreationBaseline = sortedGroupSnapshots.find((s) => {
+    if (!s || !s.totalUsdValue || s.totalUsdValue <= 0) return false;
+    if (!Array.isArray(s.balances) || s.balances.length === 0) return false;
+    const hasZeroPrice = s.balances.some((b: any) => !b || b.price === undefined || b.price <= 0);
+    return !hasZeroPrice;
+  });
+
+  const creationBaselineUsd = cleanCreationBaseline?.totalUsdValue;
+  const hasCreationBaseline = creationBaselineUsd !== undefined && creationBaselineUsd > 0;
+
+  let sinceCreationPct: number | null = null;
+  let sinceCreationDeltaUsd: number | null = null;
+
+  if (hasCreationBaseline) {
+    sinceCreationDeltaUsd = totalUsdValue - creationBaselineUsd;
+    sinceCreationPct = (sinceCreationDeltaUsd / creationBaselineUsd) * 100;
+  }
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-300">
       
@@ -862,15 +885,29 @@ export default function AllocationView({
         </div>
 
         <div className="bg-slate-900 border border-slate-850 p-4 rounded-xl space-y-1">
-          <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Target Equal Weight</span>
-          <div className="text-xl font-mono font-black text-white">{targetPercent.toFixed(1)}% each</div>
-        </div>
-
-        <div className="bg-slate-900 border border-slate-850 p-4 rounded-xl space-y-1">
           <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Maximum absolute Drift</span>
           <div className={`text-xl font-mono font-black ${maxAbsoluteDrift >= DRIFT_THRESHOLD ? 'text-amber-400' : 'text-emerald-400'}`}>
             {maxAbsoluteDrift.toFixed(1)}%
           </div>
+        </div>
+
+        <div className="bg-slate-900 border border-slate-850 p-4 rounded-xl space-y-1">
+          <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Value Since Creation</span>
+          {hasCreationBaseline && sinceCreationPct !== null && sinceCreationDeltaUsd !== null ? (
+            <div>
+              <div className={`text-xl font-mono font-black ${sinceCreationPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {sinceCreationPct >= 0 ? '+' : ''}{sinceCreationPct.toFixed(1)}%
+              </div>
+              <div className="text-[11px] font-mono font-medium text-slate-400 mt-0.5">
+                {sinceCreationDeltaUsd >= 0 ? '+' : '-'}${Math.abs(sinceCreationDeltaUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="text-xl font-mono font-black text-slate-500">Pending</div>
+              <div className="text-[11px] font-sans text-slate-500 mt-0.5">Log a snapshot</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -971,28 +1008,29 @@ export default function AllocationView({
                             style={{ backgroundColor: COIN_LINE_COLORS[group.memberMints.indexOf(item.mint) % COIN_LINE_COLORS.length] || '#475569' }}
                           />
                           <span className="font-extrabold text-white text-sm">{item.symbol}</span>
-                          <span className="text-[10px] text-slate-500 font-mono">
+                          <span className="text-[11px] text-slate-500 font-mono">
                             {isUnknown ? (
                               <span className="text-amber-500/80 animate-pulse font-medium">Resolving decimals on Solana...</span>
                             ) : (
-                              `${item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })} units`
+                              `${item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 6 })}`
                             )}
                           </span>
 
                           {/* Inline Target Weight Input */}
                           {!isUnknown && (
                             <div className="flex items-center gap-1.5 ml-2">
-                              <span className="text-[10px] text-slate-500 font-bold uppercase font-mono">Target:</span>
+                              <span className="text-[11px] text-slate-500 font-bold uppercase font-mono">Target:</span>
                               <input
                                 type="number"
+                                inputMode="decimal"
                                 min="0"
                                 max="100"
                                 step="0.1"
                                 value={tempWeights[item.mint] !== undefined ? tempWeights[item.mint] : ''}
                                 onChange={(e) => handleWeightChange(item.mint, parseFloat(e.target.value) || 0)}
-                                className="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 w-14 text-right text-xs text-white font-mono font-bold focus:outline-none focus:border-emerald-500"
+                                className="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 w-16 text-right text-[11px] text-white font-mono font-bold tabular-nums focus:outline-none focus:border-emerald-500"
                               />
-                              <span className="text-[10px] text-slate-500 font-bold">%</span>
+                              <span className="text-[11px] text-slate-500 font-bold">%</span>
                             </div>
                           )}
 
@@ -1025,15 +1063,15 @@ export default function AllocationView({
                           )}
                         </div>
 
-                        <div className="text-right text-xs">
+                        <div className="text-right text-[11px] font-mono">
                           {isUnknown ? (
-                            <span className="font-mono text-slate-500 italic text-[11px]">Loading balances...</span>
+                            <span className="text-slate-500 italic">Loading balances...</span>
                           ) : (
                             <>
-                              <span className="font-mono text-slate-300 font-semibold">${item.usdValue.toFixed(2)}</span>
+                              <span className="text-slate-300 font-semibold">${item.usdValue.toFixed(2)}</span>
                               <span className="text-slate-500 mx-1.5">|</span>
-                              <span className="font-mono text-slate-400">Price: {formatPrice(item.price)}</span>
-                              <span className={`text-[10px] ml-1.5 font-bold font-mono ${(item.change24h || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              <span className="text-slate-400">Price: {formatPrice(item.price)}</span>
+                              <span className={`text-[11px] ml-1.5 font-bold ${(item.change24h || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                                 ({(item.change24h || 0) >= 0 ? '+' : ''}{(item.change24h || 0).toFixed(1)}%)
                               </span>
                             </>
@@ -1044,7 +1082,7 @@ export default function AllocationView({
                       {/* Drift Bar */}
                       {isUnknown ? (
                         <div className="w-full bg-slate-950/50 h-5 rounded-lg overflow-hidden border border-slate-900/40 flex items-center justify-center relative">
-                          <span className="text-[9px] font-mono text-slate-600 tracking-wider uppercase animate-pulse">Calculating drift once decimals resolve...</span>
+                          <span className="text-[10px] font-mono text-slate-600 tracking-wider uppercase animate-pulse">Calculating drift once decimals resolve...</span>
                         </div>
                       ) : (
                         <div className="w-full bg-slate-950 h-5 rounded-lg overflow-hidden border border-slate-850 flex relative">
@@ -1059,7 +1097,7 @@ export default function AllocationView({
                           </div>
                           {/* Divider Line representing exact Target Weight */}
                           <div className="absolute left-1/2 top-0 bottom-0 w-0.5 bg-slate-700 z-10 flex items-center justify-center">
-                            <span className="absolute text-[8px] font-mono text-slate-500 -top-3.5">TARGET ({item.targetWeight.toFixed(1)}%)</span>
+                            <span className="absolute text-[10px] font-mono text-slate-500 -top-3.5">TARGET ({item.targetWeight.toFixed(1)}%)</span>
                           </div>
                           {/* Overweight fill (right side of target) */}
                           <div className="w-1/2 h-full flex justify-start items-center bg-slate-950/40 relative">

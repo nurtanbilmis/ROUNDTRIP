@@ -424,7 +424,7 @@ export default function WithdrawModal({
                             className="accent-emerald-500 cursor-pointer w-4 h-4"
                           />
                           <span className="text-sm font-bold text-white">{item.symbol}</span>
-                          <span className="text-xs text-slate-400">{item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} units</span>
+                          <span className="text-xs text-slate-400">{item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
                         </div>
                         <span className="font-mono text-xs text-slate-300 font-semibold">${item.usdValue.toFixed(2)}</span>
                       </div>

@@ -155,6 +155,15 @@ div.fixed.inset-0 {
 }
 
 /* Input and dropdown elements */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
 input[type="text"], input[type="number"], select {
   border-radius: 12px !important;
   border: 3px solid #000000 !important;

@@ -155,75 +155,78 @@ export async function fetchPricesAndInfo(mints: string[]): Promise<Record<string
     result[mint] = { price: 0, change24h: 0 };
   }
 
-  // 1. Fetch live prices from Jupiter Price API v3
-  try {
-    const headers: Record<string, string> = {};
-    const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-    if (apiKey) {
-      headers['x-api-key'] = apiKey;
-    }
-    const res = await fetch(`${JUP_API_BASE}/price/v3?ids=${mints.join(',')}`, { headers });
-    if (res.ok) {
-      const data = await res.json();
-      if (data) {
-        for (const mint of mints) {
-          const item = data[mint];
-          if (item) {
-            if (typeof item.usdPrice === 'number') {
-              result[mint].price = item.usdPrice;
-            } else if (typeof item.usdPrice === 'string') {
-              result[mint].price = parseFloat(item.usdPrice);
-            }
+  // Chunk mints into batches of at most 30
+  const BATCH_SIZE = 30;
+  const batches: string[][] = [];
+  for (let i = 0; i < mints.length; i += BATCH_SIZE) {
+    batches.push(mints.slice(i, i + BATCH_SIZE));
+  }
 
-            if (typeof item.priceChange24h === 'number') {
-              result[mint].change24h = item.priceChange24h;
-            } else if (typeof item.priceChange24h === 'string') {
-              result[mint].change24h = parseFloat(item.priceChange24h);
+  const headers: Record<string, string> = {};
+  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
+  if (apiKey) {
+    headers['x-api-key'] = apiKey;
+  }
+
+  for (const batch of batches) {
+    // 1. Fetch live prices from Jupiter Price API v3 for this batch
+    try {
+      const res = await fetch(`${JUP_API_BASE}/price/v3?ids=${batch.join(',')}`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        if (data) {
+          for (const mint of batch) {
+            const item = data[mint];
+            if (item) {
+              if (typeof item.usdPrice === 'number') {
+                result[mint].price = item.usdPrice;
+              } else if (typeof item.usdPrice === 'string') {
+                result[mint].price = parseFloat(item.usdPrice);
+              }
+
+              if (typeof item.priceChange24h === 'number') {
+                result[mint].change24h = item.priceChange24h;
+              } else if (typeof item.priceChange24h === 'string') {
+                result[mint].change24h = parseFloat(item.priceChange24h);
+              }
             }
           }
         }
       }
+    } catch (err) {
+      console.error('Error fetching prices from Jupiter Price API v3:', err);
     }
-  } catch (err) {
-    console.error('Error fetching prices from Jupiter Price API v3:', err);
-  }
 
-  // 2. Fetch 24h percentage changes and fallback prices from DexScreener
-  try {
-    // DexScreener accepts batch queries (up to 30)
-    const res = await fetch(`${DEXSCREENER_API_BASE}/tokens/${mints.join(',')}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.pairs) {
-        // Filter to Solana blockchain pairs only and sort by liquidity descending
-        const solanaPairs = data.pairs
-          .filter((pair: any) => pair.chainId === 'solana')
-          .sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+    // 2. Fetch 24h percentage changes and fallback prices from DexScreener for this batch
+    try {
+      const res = await fetch(`${DEXSCREENER_API_BASE}/tokens/${batch.join(',')}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.pairs) {
+          const solanaPairs = data.pairs
+            .filter((pair: any) => pair.chainId === 'solana')
+            .sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
 
-        // Tracks which mints we have already populated from the highest liquidity Solana pair
-        const populatedMints = new Set<string>();
+          const populatedMints = new Set<string>();
 
-        for (const pair of solanaPairs) {
-          const mintAddress = pair.baseToken?.address;
-          if (mintAddress && mints.includes(mintAddress) && !populatedMints.has(mintAddress)) {
-            // Fallback: If 24h change is not set/fetched yet from Jupiter, fill it from DexScreener
-            if (result[mintAddress].change24h === 0 && pair.priceChange && typeof pair.priceChange.h24 === 'number') {
-              result[mintAddress].change24h = pair.priceChange.h24;
+          for (const pair of solanaPairs) {
+            const mintAddress = pair.baseToken?.address;
+            if (mintAddress && batch.includes(mintAddress) && !populatedMints.has(mintAddress)) {
+              if (result[mintAddress].change24h === 0 && pair.priceChange && typeof pair.priceChange.h24 === 'number') {
+                result[mintAddress].change24h = pair.priceChange.h24;
+              }
+              if (result[mintAddress].price === 0 && pair.priceUsd) {
+                result[mintAddress].price = parseFloat(pair.priceUsd);
+              }
+              populatedMints.add(mintAddress);
             }
-            // Fallback: ONLY fill price when the Jupiter price is 0/missing
-            if (result[mintAddress].price === 0 && pair.priceUsd) {
-              result[mintAddress].price = parseFloat(pair.priceUsd);
-            }
-            populatedMints.add(mintAddress);
           }
         }
       }
+    } catch (err) {
+      console.error('Error fetching 24h changes from DexScreener:', err);
     }
-  } catch (err) {
-    console.error('Error fetching 24h changes from DexScreener:', err);
   }
-
-  // Real mode: keep price as 0 ("price unavailable"), which will exclude it from calculations
 
   return result;
 }
