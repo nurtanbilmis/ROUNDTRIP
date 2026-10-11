@@ -18,7 +18,7 @@ You group coins into baskets ("link-groups") with target weights. When prices mo
 - **Market Intel**: prices, 24h changes, and quick swaps.
 - **Backup**: export your baskets and harvest history to a file and import them in another browser (⚙️ Settings → Backup).
 - **Wallet tools**: hide dust, convert small balances to SOL, close empty token accounts to reclaim rent.
-- **Leaderboard** for community competitions (configured in `src/competition.ts`).
+- **Leaderboard** for community competitions: hidden between seasons, configured in `src/competition.ts`.
 
 ## How it works
 
@@ -94,6 +94,14 @@ src/rpc.ts              Solana connection helper (default = /api/rpc)
 src/presets.ts          Basket presets
 src/competition.ts      Leaderboard competition config
 ```
+
+## Running a competition
+
+The Leaderboard tab is hidden for now. Its code stays in place for the next season. To start a season, follow the checklist at the top of [`src/competition.ts`](src/competition.ts): turn the tab on, set the entrants' wallets, the start value (USD value of 0.5 SOL at kickoff), and the start and end dates. Then open a pull request.
+
+## Support
+
+Round Trip charges 0% platform fees. If it helps you, you can send a tip to the creator at **`bestchain.sol`** (any Solana wallet that supports .sol names). The address is set in [`src/components/SupportCreator.tsx`](src/components/SupportCreator.tsx).
 
 ## Contributing
 
