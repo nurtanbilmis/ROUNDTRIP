@@ -3,7 +3,7 @@
  * Same behaviour as the Express route in server.ts (see lib/rpcProxy.ts).
  * Set RPC_UPSTREAM_URL in the Vercel project's Environment Variables.
  */
-import { clientIpFrom, getUpstreamUrl, handleRpcRequest } from '../lib/rpcProxy.js';
+import { clientIpFrom, getUpstreamUrl, handleRpcRequest, healthInfo } from '../lib/rpcProxy.js';
 
 const MAX_BODY_BYTES = 1_000_000;
 
@@ -28,6 +28,13 @@ export async function POST(request: Request): Promise<Response> {
 
   return new Response(result.body, {
     status: result.status,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  });
+}
+
+export function GET(): Response {
+  return new Response(healthInfo(process.env), {
+    status: 200,
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   });
 }
