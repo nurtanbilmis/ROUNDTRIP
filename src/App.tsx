@@ -11,6 +11,8 @@ import ConvertModal from './components/ConvertModal';
 import AllocationView from './components/AllocationView';
 import PriceView from './components/PriceView';
 import LeaderboardView from './components/LeaderboardView';
+import { SHOW_LEADERBOARD } from './competition';
+import SupportCreator from './components/SupportCreator';
 import ConfirmModal from './components/ConfirmModal';
 import { PRESETS, Preset } from './presets';
 import PresetVerifier from './components/PresetVerifier';
@@ -833,16 +835,18 @@ function Dashboard() {
               >
                 Market Intel
               </button>
-              <button
-                onClick={() => {
-                  setActiveTab('leaderboard');
-                }}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  activeTab === 'leaderboard' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Leaderboard
-              </button>
+              {SHOW_LEADERBOARD && (
+                <button
+                  onClick={() => {
+                    setActiveTab('leaderboard');
+                  }}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    activeTab === 'leaderboard' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Leaderboard
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -978,7 +982,7 @@ function Dashboard() {
           </main>
         )}
 
-        {activeTab === 'leaderboard' && (
+        {SHOW_LEADERBOARD && activeTab === 'leaderboard' && (
           <main className="max-w-6xl mx-auto px-6 py-12 flex-grow flex flex-col justify-start space-y-6 w-full">
             <LeaderboardView rpcUrl={rpcUrl} tokenMetadata={tokenMetadata} />
           </main>
@@ -991,7 +995,10 @@ function Dashboard() {
             <span>|</span>
             <span>Jupiter Price V3 API: Connected</span>
           </div>
-          <span>Round Trip Rebalancer v1.2.0</span>
+          <div className="flex items-center gap-4">
+            <SupportCreator />
+            <span className="hidden md:inline">Round Trip Rebalancer v1.2.0</span>
+          </div>
         </footer>
 
         {/* Preset Verifier Overlay */}
@@ -1426,17 +1433,19 @@ function Dashboard() {
             >
               Market Intel
             </button>
-            <button
-              onClick={() => {
-                setSelectedGroupId(null);
-                setActiveTab('leaderboard');
-              }}
-              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'leaderboard' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Leaderboard
-            </button>
+            {SHOW_LEADERBOARD && (
+              <button
+                onClick={() => {
+                  setSelectedGroupId(null);
+                  setActiveTab('leaderboard');
+                }}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeTab === 'leaderboard' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Leaderboard
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -2067,7 +2076,7 @@ function Dashboard() {
               />
             )}
 
-            {activeTab === 'leaderboard' && (
+            {SHOW_LEADERBOARD && activeTab === 'leaderboard' && (
               <LeaderboardView rpcUrl={rpcUrl} tokenMetadata={tokenMetadata} />
             )}
           </>
@@ -2223,14 +2232,15 @@ function Dashboard() {
         <div className="flex gap-6 items-center">
           <div className="flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-            <span className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Mainnet-Beta</span>
+            <span className="text-[10px] text-slate-500 uppercase font-bold tracking-widest whitespace-nowrap">Mainnet-Beta</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="hidden sm:flex items-center gap-2">
             <span className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Jupiter Routing: <span className="text-emerald-400">Connected</span></span>
           </div>
         </div>
-        <div className="flex gap-4 text-[10px] text-slate-500">
-          <span>Round Trip Rebalancer · Non-Custodial Multi-Basket Architecture</span>
+        <div className="flex gap-4 items-center text-[10px] text-slate-500">
+          <SupportCreator />
+          <span className="hidden lg:inline">Round Trip Rebalancer · Non-Custodial Multi-Basket Architecture</span>
         </div>
       </footer>
     </div>
