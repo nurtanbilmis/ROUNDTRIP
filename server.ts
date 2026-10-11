@@ -6,6 +6,14 @@ import { clientIpFrom, getUpstreamUrl, handleRpcRequest } from './lib/rpcProxy.j
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Local development: load server-side secrets from .env.local if present.
+// On Vercel and other hosts, set environment variables in the host's settings instead.
+try {
+  process.loadEnvFile('.env.local');
+} catch {
+  // no .env.local: rely on the real environment
+}
+
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 

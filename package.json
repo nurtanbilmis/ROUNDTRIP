@@ -1,14 +1,22 @@
 {
-  "name": "react-example",
+  "name": "round-trip",
+  "version": "1.2.0",
   "private": true,
-  "version": "0.0.0",
+  "description": "Non-custodial Solana token basket rebalancer built on volatility harvesting. Swaps route through Jupiter; keys never leave your wallet.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nurtanbilmis/ROUNDTRIP.git"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
-    "start": "tsx server.ts",
+    "start": "NODE_ENV=production tsx server.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -17,24 +25,20 @@
     "@solana/wallet-adapter-react-ui": "^0.9.39",
     "@solana/wallet-adapter-solflare": "^0.6.34",
     "@solana/web3.js": "^1.98.4",
-    "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
     "buffer": "^6.0.3",
     "express": "^5.3.0",
     "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "recharts": "^3.9.2",
-    "vite": "^6.2.3"
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
     "@types/express": "^5.0.6",
     "@types/node": "^22.14.0",
-    "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
+    "@vitejs/plugin-react": "^5.0.4",
     "tailwindcss": "^4.1.14",
-    "tsx": "^4.23.15",
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
   }
