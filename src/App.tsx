@@ -1265,17 +1265,17 @@ function Dashboard() {
         </div>
 
         {connected && (balancesError || missingPriceMints.length > 0) && (
-          <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 text-amber-300 px-4 py-3 rounded-xl text-xs">
+          <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 px-4 py-3 rounded-xl text-xs">
             <span aria-hidden="true">⚠</span>
             <div>
               <span className="font-bold">Some prices or balances could not be loaded, so values may be incomplete. Retrying…</span>
               {missingPriceMints.length > 0 && (
-                <span className="block text-amber-400/80 font-mono mt-0.5">
+                <span className="block font-mono font-semibold opacity-80 mt-0.5">
                   Missing prices: {missingPriceMints.map((m) => tokenMetadata[m]?.symbol || `${m.substring(0, 4)}…`).join(', ')}
                 </span>
               )}
               {balancesError && (
-                <span className="block text-amber-400/80 mt-0.5">Wallet balances: last load failed, showing previous values.</span>
+                <span className="block font-semibold opacity-80 mt-0.5">Wallet balances: last load failed, showing previous values.</span>
               )}
             </div>
           </div>
