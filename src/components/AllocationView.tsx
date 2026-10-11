@@ -657,7 +657,15 @@ export default function AllocationView({
   );
   
   // Rebalance is available if there is at least one coin and we have some value
-  const rebalanceAvailable = groupBalances.length > 1 && totalUsdValue > 0;
+  // A missing price must never be treated as $0: it would size trades wrongly and
+  // record a wrong harvest. Block rebalancing until every member has a real price.
+  const missingPriceMembers = group.memberMints.filter((m) => !((prices[m]?.price ?? 0) > 0));
+  const pricesReady = missingPriceMembers.length === 0;
+  const missingPriceLabel = missingPriceMembers
+    .map((m) => tokenMetadata[m]?.symbol || `${m.substring(0, 4)}…`)
+    .join(', ');
+
+  const rebalanceAvailable = groupBalances.length > 1 && totalUsdValue > 0 && pricesReady;
 
   const targetWeightsSum = groupBalances.reduce((sum, item) => sum + item.targetWeight, 0);
   const isTargetWeightsSumValid = groupBalances.length === 0 || Math.abs(targetWeightsSum - 100) < 0.15;
@@ -903,6 +911,7 @@ export default function AllocationView({
   const handleExecuteRebalance = async () => {
     if (activeSwaps.length === 0) return;
     if (rebalancing) return;
+    if (!pricesReady) return;
 
     setRebalancing(true);
 
@@ -1034,6 +1043,7 @@ export default function AllocationView({
   // Execute a single specific trade from the list
   const handleExecuteSingleTrade = async (targetIdx: number) => {
     if (rebalancing) return;
+    if (!pricesReady) return;
     const swap = activeSwaps[targetIdx];
     if (!swap) return;
 
@@ -1293,7 +1303,9 @@ export default function AllocationView({
             disabled={!rebalanceAvailable || currentSwaps.length === 0}
             className="comic-btn bg-slate-950 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 text-slate-300 font-black rounded-xl text-xs px-5 py-2.5 transition-all cursor-pointer flex items-center gap-1.5 shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
             title={
-              !rebalanceAvailable
+              !pricesReady
+                ? `Waiting for prices: ${missingPriceLabel}`
+                : !rebalanceAvailable
                 ? 'Link at least 2 coins with balance to enable rebalance'
                 : currentSwaps.length === 0
                 ? 'Already balanced, no trades needed.'
@@ -2045,9 +2057,11 @@ export default function AllocationView({
                     <div className="flex flex-col gap-3 items-center">
                       <button
                         onClick={() => setRebalanceInitiated(true)}
-                        className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-extrabold rounded-xl text-xs transition-all cursor-pointer shadow-lg"
+                        disabled={!pricesReady}
+                        title={!pricesReady ? `Waiting for prices: ${missingPriceLabel}` : undefined}
+                        className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-extrabold rounded-xl text-xs transition-all cursor-pointer shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        Verify Rebalance Routes & Quotes
+                        {pricesReady ? 'Verify Rebalance Routes & Quotes' : 'Waiting for prices…'}
                       </button>
                       {previewRebalanceAvailable && (
                         <button

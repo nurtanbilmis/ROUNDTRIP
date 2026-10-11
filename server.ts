@@ -123,7 +123,11 @@ app.post('/api/rpc', express.json({ limit: '1mb' }), async (req: Request, res: R
 
   const tritonUrl = process.env.TRITON_RPC_URL;
   if (!tritonUrl) {
-    res.status(503).send('RPC not configured');
+    res.status(503).json({
+      jsonrpc: '2.0',
+      error: { code: -32603, message: 'RPC not configured' },
+      id: Array.isArray(body) ? null : body?.id ?? null,
+    });
     return;
   }
 
@@ -160,7 +164,8 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (_req, res) => {
+    // SPA fallback. Express 5 no longer accepts '*' as a path, so use a catch-all middleware.
+    app.use((_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { PublicKey, VersionedTransaction, Transaction } from '@solana/web3.js';
 import { WalletType } from '../types';
 import { buildSwapTransaction, fetchQuote } from '../jupiter';
@@ -15,6 +15,7 @@ import {
 
 // Import Solana Wallet Adapter CSS
 import '@solana/wallet-adapter-react-ui/styles.css';
+import { SolflareWalletAdapter } from '@solana/wallet-adapter-solflare';
 
 import {
   TOKEN_PROGRAM_ID,
@@ -36,6 +37,7 @@ interface WalletContextType {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   refreshBalances: () => Promise<Record<string, number>>;
+  balancesError: string | null;
   signAndExecuteSwap: (params: {
     inputMint: string;
     outputMint: string;
@@ -108,11 +110,38 @@ const WalletInnerProvider: React.FC<{
     return rentSol.toLocaleString(undefined, { minimumFractionDigits: 5, maximumFractionDigits: 5 });
   }, [getRentSol]);
 
-  // Fetch real onchain balances for real wallets
+  // Latest committed balances, so callers get a sensible value even when a refresh fails or is superseded
+  const balancesRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    balancesRef.current = onChainBalances;
+  }, [onChainBalances]);
+
+  // Load/error state for balance fetching
+  const [balancesError, setBalancesError] = useState<string | null>(null);
+  // Bumped on every failed load so the retry effect re-runs even if the error text is identical
+  const [failureTick, setFailureTick] = useState(0);
+  const requestIdRef = useRef(0);
+  const retryCountRef = useRef(0);
+  const MAX_AUTO_RETRIES = 3;
+  const RETRY_DELAY_MS = 3000;
+
+  // Clear balances when the wallet changes so one wallet's holdings never show under another
+  useEffect(() => {
+    setOnChainBalances({});
+    setTokenAccountLamports({});
+    balancesRef.current = {};
+    setBalancesError(null);
+    retryCountRef.current = 0;
+  }, [publicKeyStr]);
+
+  // Fetch real on-chain balances. All three reads (SOL, SPL, Token-2022) must succeed
+  // before anything is committed: a partial result is worse than a stale one.
   const refreshBalances = useCallback(async (): Promise<Record<string, number>> => {
     if (!connected || !publicKeyStr) return {};
 
-    // Order URLs to try: current RPC first, then DEFAULT_RPC_URL if not already current
+    const requestId = ++requestIdRef.current;
+    const ownerAtStart = publicKeyStr;
+
     const urlsToTry = [rpcUrl];
     if (rpcUrl !== DEFAULT_RPC_URL) {
       urlsToTry.push(DEFAULT_RPC_URL);
@@ -124,46 +153,30 @@ const WalletInnerProvider: React.FC<{
       try {
         const connection = createConnection(url);
         const pubkey = new PublicKey(publicKeyStr);
+
+        const [solBalance, tokenAccounts, token2022Accounts] = await Promise.all([
+          connection.getBalance(pubkey),
+          connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID }),
+          connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_2022_PROGRAM_ID }),
+        ]);
+
         const newBalances: Record<string, number> = {};
         const newLamports: Record<string, number> = {};
 
-        // 1. Fetch SOL Balance
-        const solBalance = await connection.getBalance(pubkey);
-        // Map SOL to standard WSOL mint
+        // Map native SOL to the WSOL mint
         newBalances['So11111111111111111111111111111111111111112'] = solBalance;
 
-        // 2. Fetch SPL token accounts
-        try {
-          const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, {
-            programId: TOKEN_PROGRAM_ID,
-          });
-
-          for (const account of tokenAccounts.value) {
-            const info = account.account.data.parsed.info;
-            const mint = info.mint;
-            const amount = parseInt(info.tokenAmount.amount, 10);
-            newBalances[mint] = (newBalances[mint] || 0) + amount;
-            newLamports[mint] = account.account.lamports;
-          }
-        } catch (err) {
-          console.warn(`Failed to fetch legacy SPL token accounts on ${url}:`, err);
+        for (const account of [...tokenAccounts.value, ...token2022Accounts.value]) {
+          const info = account.account.data.parsed.info;
+          const mint = info.mint;
+          const amount = parseInt(info.tokenAmount.amount, 10);
+          newBalances[mint] = (newBalances[mint] || 0) + amount;
+          newLamports[mint] = account.account.lamports;
         }
 
-        // 3. Fetch Token-2022 accounts
-        try {
-          const token2022Accounts = await connection.getParsedTokenAccountsByOwner(pubkey, {
-            programId: TOKEN_2022_PROGRAM_ID,
-          });
-
-          for (const account of token2022Accounts.value) {
-            const info = account.account.data.parsed.info;
-            const mint = info.mint;
-            const amount = parseInt(info.tokenAmount.amount, 10);
-            newBalances[mint] = (newBalances[mint] || 0) + amount;
-            newLamports[mint] = account.account.lamports;
-          }
-        } catch (err) {
-          console.warn(`Failed to fetch Token-2022 accounts on ${url}:`, err);
+        // A newer request started, or the wallet changed while we were waiting: drop this result
+        if (requestId !== requestIdRef.current || ownerAtStart !== publicKeyStr) {
+          return balancesRef.current;
         }
 
         setOnChainBalances((current) => {
@@ -175,27 +188,39 @@ const WalletInnerProvider: React.FC<{
           }
           return current;
         });
-
         setTokenAccountLamports(newLamports);
-
-        // If we switched to a fallback URL and it worked, auto-update the context RPC url
-        if (url !== rpcUrl) {
-          console.log(`Auto-switched to working RPC endpoint: ${url}`);
-          setRpcUrl(url);
-        }
+        balancesRef.current = newBalances;
+        setBalancesError(null);
+        retryCountRef.current = 0;
 
         return newBalances;
       } catch (err) {
-        console.warn(`Failed to fetch real wallet balances on RPC ${url}:`, err);
+        console.warn(`Failed to fetch wallet balances on ${url === DEFAULT_RPC_URL ? 'default RPC' : 'custom RPC'}:`, err);
         lastError = err;
       }
     }
 
-    console.error('All attempted RPC endpoints failed to fetch real wallet balances:', lastError);
-    return {};
-  }, [connected, publicKeyStr, rpcUrl, setRpcUrl]);
+    console.error('All RPC endpoints failed to fetch wallet balances:', lastError);
+    if (requestId === requestIdRef.current) {
+      setBalancesError(lastError?.message || 'Could not load wallet balances');
+      setFailureTick((t) => t + 1);
+    }
+    // Keep showing the last good balances instead of wiping them
+    return balancesRef.current;
+  }, [connected, publicKeyStr, rpcUrl]);
 
-  // Auto-refresh balances on load/connect
+  // Auto-retry after a failed load, a few times, then wait for the next manual or triggered refresh
+  useEffect(() => {
+    if (!balancesError || !connected) return;
+    if (retryCountRef.current >= MAX_AUTO_RETRIES) return;
+    const timer = setTimeout(() => {
+      retryCountRef.current += 1;
+      refreshBalances();
+    }, RETRY_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [failureTick, balancesError, connected, refreshBalances]);
+
+  // Load balances on connect / wallet change
   useEffect(() => {
     if (connected) {
       refreshBalances();
@@ -678,6 +703,7 @@ const WalletInnerProvider: React.FC<{
         connect,
         disconnect,
         refreshBalances,
+        balancesError,
         signAndExecuteSwap,
         getConfirmedSwapDeltas,
         closeEmptyAccount,
@@ -735,6 +761,10 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  // Wallet Standard wallets (Phantom, Backpack, ...) register themselves. Solflare is added
+  // explicitly because its extension sometimes registers too late to be detected.
+  const wallets = useMemo(() => [new SolflareWalletAdapter()], []);
+
   return (
     <ConnectionProvider
       endpoint={rpcUrl}
@@ -743,7 +773,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         wsEndpoint: rpcUrl === DEFAULT_RPC_URL ? 'wss://api.mainnet-beta.solana.com' : undefined,
       }}
     >
-      <SolanaBaseWalletProvider wallets={[]} autoConnect>
+      <SolanaBaseWalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
           <WalletInnerProvider
             rpcUrl={rpcUrl}
