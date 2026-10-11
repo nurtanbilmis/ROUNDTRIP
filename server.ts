@@ -1,8 +1,8 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { clientIpFrom, getUpstreamUrl, handleRpcRequest, healthInfo } from './lib/rpcProxy.js';
-import { getJupApiKey, getJupBase, handleJupRequest } from './lib/jupProxy.js';
+import { clientIpFrom, getUpstreamUrl, handleRpcRequest, healthInfo, upstreamCheck } from './lib/rpcProxy.js';
+import { getJupApiKey, getJupBase, handleJupRequest, jupiterCheck } from './lib/jupProxy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,8 +18,9 @@ app.post('/api/rpc', express.json({ limit: '1mb' }), async (req: Request, res: R
   res.status(result.status).set('Content-Type', 'application/json').send(result.body);
 });
 
-app.get('/api/rpc', (_req: Request, res: Response) => {
-  res.set('Content-Type', 'application/json').send(healthInfo(process.env));
+app.get('/api/rpc', async (req: Request, res: Response) => {
+  const body = req.query.check ? await upstreamCheck(process.env) : healthInfo(process.env);
+  res.set('Content-Type', 'application/json').set('Cache-Control', 'no-store').send(body);
 });
 
 // Jupiter API proxy: the browser calls /api/jup?p=<endpoint>, we add the private key.
@@ -27,7 +28,8 @@ app.get('/api/rpc', (_req: Request, res: Response) => {
 app.all('/api/jup', express.text({ type: '*/*', limit: '200kb' }), async (req: Request, res: Response) => {
   const search = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
   if (req.method === 'GET' && !new URLSearchParams(search).get('p')) {
-    res.set('Content-Type', 'application/json').send(healthInfo(process.env));
+    const check = new URLSearchParams(search).get('check');
+    res.set('Content-Type', 'application/json').set('Cache-Control', 'no-store').send(check ? await jupiterCheck(process.env) : healthInfo(process.env));
     return;
   }
   const clientIp = clientIpFrom(req.headers['x-forwarded-for'] as string | undefined, req.ip || req.socket.remoteAddress);
