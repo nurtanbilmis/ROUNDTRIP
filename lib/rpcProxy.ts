@@ -140,6 +140,8 @@ export function healthInfo(env: Record<string, string | undefined>): string {
     ok: true,
     rpcUpstreamConfigured: Boolean(getUpstreamUrl(env)),
     jupiterKeyConfigured: Boolean(env.JUP_API_KEY),
+    rpcOrigin: siteOrigin(env) ?? 'this site',
+    publicRpcFallback: Boolean(env.VITE_PUBLIC_RPC_URL),
     note: 'Shows only whether each key is set; values are never shown.',
   });
 }
