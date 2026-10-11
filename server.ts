@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { clientIpFrom, getUpstreamUrl, handleRpcRequest, healthInfo, upstreamCheck } from './lib/rpcProxy.js';
+import { clientIpFrom, getUpstreamUrl, handleRpcRequest, healthInfo, siteOrigin, upstreamCheck } from './lib/rpcProxy.js';
 import { getJupApiKey, getJupBase, handleJupRequest, jupiterCheck } from './lib/jupProxy.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -14,12 +14,12 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 // Shared with the Vercel function in api/rpc.ts.
 app.post('/api/rpc', express.json({ limit: '1mb' }), async (req: Request, res: Response) => {
   const clientIp = clientIpFrom(req.headers['x-forwarded-for'] as string | undefined, req.ip || req.socket.remoteAddress);
-  const result = await handleRpcRequest(req.body, clientIp, getUpstreamUrl(process.env));
+  const result = await handleRpcRequest(req.body, clientIp, getUpstreamUrl(process.env), siteOrigin(process.env, `${req.protocol}://${req.get('host')}`));
   res.status(result.status).set('Content-Type', 'application/json').send(result.body);
 });
 
 app.get('/api/rpc', async (req: Request, res: Response) => {
-  const body = req.query.check ? await upstreamCheck(process.env) : healthInfo(process.env);
+  const body = req.query.check ? await upstreamCheck(process.env, siteOrigin(process.env, `${req.protocol}://${req.get('host')}`)) : healthInfo(process.env);
   res.set('Content-Type', 'application/json').set('Cache-Control', 'no-store').send(body);
 });
 
