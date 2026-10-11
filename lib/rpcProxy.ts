@@ -119,3 +119,17 @@ export async function handleRpcRequest(
 export function clientIpFrom(forwardedFor: string | null | undefined, fallback?: string | null): string {
   return forwardedFor?.split(',')[0]?.trim() || fallback || 'unknown';
 }
+
+/**
+ * Health check for GET /api/rpc: shows whether the route is deployed and configured,
+ * without revealing any secret. Open https://<your-site>/api/rpc in a browser.
+ */
+export function healthInfo(env: Record<string, string | undefined>): string {
+  return JSON.stringify({
+    ok: true,
+    route: '/api/rpc',
+    rpcUpstreamConfigured: Boolean(getUpstreamUrl(env)),
+    jupiterKeyConfigured: Boolean(env.VITE_JUP_API_KEY || env.VITE_JUPITER_API_KEY),
+    note: 'POST JSON-RPC requests here. Values are never shown.',
+  });
+}
