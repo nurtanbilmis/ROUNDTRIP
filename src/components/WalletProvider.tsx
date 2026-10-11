@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { Connection, PublicKey, VersionedTransaction, Transaction } from '@solana/web3.js';
+import { PublicKey, VersionedTransaction, Transaction } from '@solana/web3.js';
 import { WalletType } from '../types';
 import { buildSwapTransaction, fetchQuote } from '../jupiter';
+import { createConnection, DEFAULT_RPC_URL } from '../rpc';
 import {
   ConnectionProvider,
   WalletProvider as SolanaBaseWalletProvider,
@@ -43,6 +44,13 @@ interface WalletContextType {
     inputDecimals: number;
     outputDecimals: number;
   }) => Promise<string>;
+  getConfirmedSwapDeltas: (params: {
+    txId: string;
+    inputMint: string;
+    outputMint: string;
+    inputDecimals: number;
+    outputDecimals: number;
+  }) => Promise<{ soldUnits: number; boughtUnits: number; ok: boolean }>;
   closeEmptyAccount: (mint: string) => Promise<string>;
   convertToSol: (mint: string, inputDecimals: number) => Promise<{ action: 'swap' | 'burn'; txId: string }>;
   rpcUrl: string;
@@ -104,28 +112,17 @@ const WalletInnerProvider: React.FC<{
   const refreshBalances = useCallback(async (): Promise<Record<string, number>> => {
     if (!connected || !publicKeyStr) return {};
 
-    const publicEndpoints = [
-      'https://api.mainnet-beta.solana.com',
-      'https://rpc.ankr.com/solana',
-      'https://solana.public-rpc.com',
-      'https://api.turing.solana.com'
-    ];
-
-    // Order URLs to try: current RPC first, then others
+    // Order URLs to try: current RPC first, then DEFAULT_RPC_URL if not already current
     const urlsToTry = [rpcUrl];
-    if (publicEndpoints.includes(rpcUrl)) {
-      for (const endpoint of publicEndpoints) {
-        if (endpoint !== rpcUrl) {
-          urlsToTry.push(endpoint);
-        }
-      }
+    if (rpcUrl !== DEFAULT_RPC_URL) {
+      urlsToTry.push(DEFAULT_RPC_URL);
     }
 
     let lastError: any = null;
 
     for (const url of urlsToTry) {
       try {
-        const connection = new Connection(url, 'confirmed');
+        const connection = createConnection(url);
         const pubkey = new PublicKey(publicKeyStr);
         const newBalances: Record<string, number> = {};
         const newLamports: Record<string, number> = {};
@@ -231,7 +228,7 @@ const WalletInnerProvider: React.FC<{
       throw new Error('Cannot close native SOL account.');
     }
 
-    const connection = new Connection(rpcUrl, 'confirmed');
+    const connection = createConnection(rpcUrl);
     const ownerPubkey = new PublicKey(publicKeyStr);
 
     let targetAccount: { pubkey: PublicKey; programId: PublicKey; amount: number } | null = null;
@@ -323,7 +320,7 @@ const WalletInnerProvider: React.FC<{
     }
 
     const SOL_MINT = 'So11111111111111111111111111111111111111112';
-    const connection = new Connection(rpcUrl, 'confirmed');
+    const connection = createConnection(rpcUrl);
     const ownerPubkey = new PublicKey(publicKeyStr);
 
     const amountBase = onChainBalances[mint] || 0;
@@ -513,7 +510,7 @@ const WalletInnerProvider: React.FC<{
       const signedTransaction = await baseWallet.signTransaction(transaction);
 
       // Submit raw transaction on-chain
-      const connection = new Connection(rpcUrl, 'confirmed');
+      const connection = createConnection(rpcUrl);
       const rawTx = signedTransaction.serialize();
       
       const txId = await connection.sendRawTransaction(rawTx, {
@@ -581,6 +578,91 @@ const WalletInnerProvider: React.FC<{
     }
   };
 
+  const getConfirmedSwapDeltas = useCallback(
+    async (params: {
+      txId: string;
+      inputMint: string;
+      outputMint: string;
+      inputDecimals: number;
+      outputDecimals: number;
+    }): Promise<{ soldUnits: number; boughtUnits: number; ok: boolean }> => {
+      try {
+        const SOL_MINT = 'So11111111111111111111111111111111111111112';
+        const owner = publicKeyStr;
+        if (!owner || !params.txId) {
+          return { soldUnits: 0, boughtUnits: 0, ok: false };
+        }
+
+        const connection = createConnection(rpcUrl);
+
+        let tx: any = null;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          try {
+            tx = await connection.getTransaction(params.txId, {
+              maxSupportedTransactionVersion: 0,
+              commitment: 'confirmed',
+            });
+            if (tx && tx.meta) {
+              if (tx.meta.err) {
+                return { soldUnits: 0, boughtUnits: 0, ok: false };
+              }
+              break;
+            }
+          } catch {
+            // retry on network lag or transient error
+          }
+          if (attempt < 5) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+          }
+        }
+
+        if (!tx || !tx.meta) {
+          return { soldUnits: 0, boughtUnits: 0, ok: false };
+        }
+
+        const meta = tx.meta;
+
+        function tokenHuman(arr: any[] | null | undefined, mint: string): number {
+          if (!arr || !Array.isArray(arr)) return 0;
+          let sum = 0;
+          for (const entry of arr) {
+            if (entry && entry.owner === owner && entry.mint === mint && entry.uiTokenAmount) {
+              if (entry.uiTokenAmount.uiAmount !== null && entry.uiTokenAmount.uiAmount !== undefined) {
+                sum += entry.uiTokenAmount.uiAmount;
+              } else {
+                const decimals = entry.uiTokenAmount.decimals ?? 0;
+                const amt = Number(entry.uiTokenAmount.amount) || 0;
+                sum += amt / Math.pow(10, decimals);
+              }
+            }
+          }
+          return sum;
+        }
+
+        const preSol = (meta.preBalances?.[0] ?? 0) / 1e9;
+        const postSol = (meta.postBalances?.[0] ?? 0) / 1e9;
+
+        const preInput = params.inputMint === SOL_MINT ? preSol : tokenHuman(meta.preTokenBalances, params.inputMint);
+        const postInput = params.inputMint === SOL_MINT ? postSol : tokenHuman(meta.postTokenBalances, params.inputMint);
+
+        const preOutput = params.outputMint === SOL_MINT ? preSol : tokenHuman(meta.preTokenBalances, params.outputMint);
+        const postOutput = params.outputMint === SOL_MINT ? postSol : tokenHuman(meta.postTokenBalances, params.outputMint);
+
+        const soldUnits = Math.max(0, preInput - postInput);
+        const boughtUnits = Math.max(0, postOutput - preOutput);
+
+        if (soldUnits <= 0 && boughtUnits <= 0) {
+          return { soldUnits: 0, boughtUnits: 0, ok: false };
+        }
+
+        return { soldUnits, boughtUnits, ok: true };
+      } catch {
+        return { soldUnits: 0, boughtUnits: 0, ok: false };
+      }
+    },
+    [rpcUrl, publicKeyStr]
+  );
+
   return (
     <WalletContext.Provider
       value={{
@@ -597,6 +679,7 @@ const WalletInnerProvider: React.FC<{
         disconnect,
         refreshBalances,
         signAndExecuteSwap,
+        getConfirmedSwapDeltas,
         closeEmptyAccount,
         convertToSol,
         rpcUrl,
@@ -612,7 +695,21 @@ const WalletInnerProvider: React.FC<{
 
 export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [rpcUrl, setRpcUrl] = useState<string>(() => {
-    return localStorage.getItem('roundtrip_rpc_url') || 'https://api.mainnet-beta.solana.com';
+    try {
+      const saved = localStorage.getItem('roundtrip_rpc_url');
+      const publicEndpoints = [
+        'api.mainnet-beta.solana.com',
+        'rpc.ankr.com/solana',
+        'solana.public-rpc.com',
+        'api.turing.solana.com',
+      ];
+      if (saved && !publicEndpoints.some((ep) => saved.includes(ep))) {
+        return saved;
+      }
+    } catch {
+      // ignore localStorage errors
+    }
+    return DEFAULT_RPC_URL;
   });
 
   const [slippageBps, setSlippageBps] = useState<number>(() => {
@@ -622,16 +719,30 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const setRpcUrlWithSave = (url: string) => {
     setRpcUrl(url);
-    localStorage.setItem('roundtrip_rpc_url', url);
+    try {
+      localStorage.setItem('roundtrip_rpc_url', url);
+    } catch {
+      // ignore
+    }
   };
 
   const setSlippageBpsWithSave = (bps: number) => {
     setSlippageBps(bps);
-    localStorage.setItem('roundtrip_slippage_bps', bps.toString());
+    try {
+      localStorage.setItem('roundtrip_slippage_bps', bps.toString());
+    } catch {
+      // ignore
+    }
   };
 
   return (
-    <ConnectionProvider endpoint={rpcUrl}>
+    <ConnectionProvider
+      endpoint={rpcUrl}
+      config={{
+        commitment: 'confirmed',
+        wsEndpoint: rpcUrl === DEFAULT_RPC_URL ? 'wss://api.mainnet-beta.solana.com' : undefined,
+      }}
+    >
       <SolanaBaseWalletProvider wallets={[]} autoConnect>
         <WalletModalProvider>
           <WalletInnerProvider

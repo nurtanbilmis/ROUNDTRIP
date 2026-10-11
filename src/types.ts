@@ -35,6 +35,24 @@ export interface LinkGroup {
   targetWeights?: Record<string, number>; // mint -> target percent
 }
 
+export interface HarvestEvent {
+  id: string;
+  timestamp: number;
+  txId: string;
+  groupId: string;
+  groupName: string;
+  soldMint: string;
+  soldSymbol: string;
+  soldUnits: number;
+  soldPriceUsd: number;
+  boughtMint: string;
+  boughtSymbol: string;
+  boughtUnits: number;
+  boughtPriceUsd: number;
+  volumeUsd: number;
+  source?: 'onchain' | 'quote';
+}
+
 export const GROUP_COLORS = ['violet', 'amber', 'sky', 'rose', 'lime'];
 
 export function getGroupColorClasses(color: string) {
@@ -124,23 +142,6 @@ export interface RebalanceSwap {
   amount: number; // base units of input
   amountHuman: number;
   usdValue: number;
-}
-
-export interface BalanceSnapshot {
-  id: string;
-  groupId: string;
-  groupName?: string;
-  eventType?: 'convert' | 'rebalance' | 'cashout' | 'membership' | 'manual';
-  timestamp: number;
-  totalUsdValue: number;
-  balances: {
-    mint: string;
-    symbol: string;
-    units?: number;
-    amountHuman: number;
-    price: number;
-    usdValue: number;
-  }[];
 }
 
 export type WalletType = 'phantom' | 'solflare' | 'backpack' | null;

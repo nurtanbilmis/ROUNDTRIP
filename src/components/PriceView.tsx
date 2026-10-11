@@ -19,9 +19,11 @@ import {
 } from 'lucide-react';
 import { TokenBalance, LinkGroup, Token, getGroupColorClasses, formatPrice } from '../types';
 import TokenLogo from './TokenLogo';
+import TokenLink from './TokenLink';
 import { useSolanaWallet } from './WalletProvider';
 import { fetchQuote, fetchVerifiedTokens } from '../jupiter';
-import EpicLavaBridgeBackground from './EpicLavaBridgeBackground';
+import MountainRopeBackground from './MountainRopeBackground';
+import PixelCharacterSprite from './PixelCharacterSprite';
 
 // Helper for stable organic placement per token
 const seededRand = (s: string) => {
@@ -364,45 +366,42 @@ export default function PriceView({
   const positionedArenaCoins = useMemo(() => {
     if (arenaCoins.length === 0) return [];
 
-    const SOFT_CEIL = 15;
-    const DEAD_ZONE = 1.5;
+    const K = 6; // softness: smaller = steeper near zero
+    const V_SPAN = 42; // max offset from the 50 percent center
+
+    const maxShare = Math.max(
+      ...arenaCoins.map((c) => (totalHoldingsValue > 0 ? c.usdValue / totalHoldingsValue : 0)),
+      1e-9
+    );
+    const MIN_SIDE = 30;
+    const MAX_SIDE = 78;
 
     const W = 1000;
     const H = 580;
 
     const nodes = arenaCoins.map((coin) => {
       const change = coin.change24h || 0;
-      const sign = change >= 0 ? 1 : -1;
-      const mag = Math.abs(change);
-
-      let intensity: number;
-      if (mag <= DEAD_ZONE) {
-        intensity = (mag / DEAD_ZONE) * 0.12;
-      } else {
-        const t = Math.min(1, (mag - DEAD_ZONE) / (SOFT_CEIL - DEAD_ZONE));
-        intensity = 0.12 + Math.pow(t, 0.8) * 0.88;
-      }
-
-      let topPercent = 50 - sign * intensity * 38;
-      topPercent += (seededRand(coin.mint + 'y') - 0.5) * 5;
+      const norm = Math.tanh(change / K); // positive is a winner
+      let topPercent = 50 - norm * V_SPAN; // winners go up
+      topPercent += (seededRand(coin.mint + 'y') - 0.5) * 3; // small jitter
       topPercent = Math.max(6, Math.min(94, topPercent));
 
-      const xPercent = 8 + seededRand(coin.mint) * 84;
+      const xPercent = 8 + seededRand(coin.mint) * 78;
 
       const share = totalHoldingsValue > 0 ? coin.usdValue / totalHoldingsValue : 0;
-      const sizeFactor = Math.sqrt(share);
-      const diameter = Math.max(38, Math.min(84, Math.round(38 + sizeFactor * 46)));
+      const ratio = share / maxShare; // largest holding is 1
+      const tileSide = Math.round(MIN_SIDE + (MAX_SIDE - MIN_SIDE) * Math.sqrt(ratio));
 
       const x = (xPercent / 100) * W;
       const y = (topPercent / 100) * H;
 
       return {
         coin,
-        diameter,
+        tileSide,
         x,
         y,
         initY: y,
-        r: diameter / 2 + 10,
+        r: tileSide / 2 + 6,
       };
     });
 
@@ -445,8 +444,8 @@ export default function PriceView({
 
     return nodes.map((node) => ({
       coin: node.coin,
-      diameter: node.diameter,
-      xPercent: Math.max(6, Math.min(94, (node.x / W) * 100)),
+      tileSide: node.tileSide,
+      xPercent: Math.max(6, Math.min(88, (node.x / W) * 100)),
       topPercent: Math.max(6, Math.min(94, (node.y / H) * 100)),
     }));
   }, [arenaCoins, totalHoldingsValue]);
@@ -455,15 +454,6 @@ export default function PriceView({
     <div id="price-view" className="space-y-4">
       {/* Dynamic Keyframe Style Block for Floating Arena Animations */}
       <style>{`
-        @keyframes lavaRise {
-          0% { transform: translateY(20px) scale(0.6); opacity: 0.2; }
-          50% { transform: translateY(-40px) scale(1.1); opacity: 0.8; }
-          100% { transform: translateY(-90px) scale(0.3); opacity: 0; }
-        }
-        @keyframes emberFly {
-          0% { transform: translateY(0px) translateX(0px); opacity: 0.9; }
-          100% { transform: translateY(-110px) translateX(12px); opacity: 0; }
-        }
         @keyframes winnerBob {
           0%, 100% { transform: translateY(0px); }
           50% { transform: translateY(-6px); }
@@ -481,12 +471,6 @@ export default function PriceView({
           0%, 100% { transform: translateY(-50%) rotate(0deg); }
           50% { transform: translateY(-50%) rotate(18deg) scale(1.1); }
         }
-        .animate-lava-rise {
-          animation: lavaRise 3.5s infinite linear;
-        }
-        .animate-ember-fly {
-          animation: emberFly 2.8s infinite ease-out;
-        }
         .animate-winner-bob {
           animation: winnerBob 3.5s ease-in-out infinite;
         }
@@ -501,22 +485,45 @@ export default function PriceView({
         }
       `}</style>
 
-      {/* Intro Stats Banner */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl flex flex-row justify-between items-center gap-4">
-        <div className="space-y-0.5">
-          <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-            <Flame className="w-4 h-4 text-emerald-400" />
-            Live Market Intel
-          </h3>
-          <p className="text-[11px] text-slate-400">
-            "There are no gains in crypto, only round trips."
-          </p>
+      {/* Intro Stats Banner with Basket Color Legend Strip */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+              <Flame className="w-4 h-4 text-emerald-400" />
+              Live Market Intel
+            </h3>
+            <span className="text-[10px] bg-slate-800 text-slate-300 font-mono font-bold px-2 py-0.5 rounded-full border border-slate-700">
+              {groups.length} Baskets Tracked
+            </span>
+          </div>
+          {/* BASKET COLOR LEGEND STRIP */}
+          {groups.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              <span className="text-[9px] text-slate-500 font-extrabold uppercase mr-1">Baskets:</span>
+              {groups.map((g) => {
+                const gColors = getGroupColorClasses(g.color);
+                return (
+                  <button
+                    key={g.id}
+                    onClick={() => onSelectGroup(g.id)}
+                    className={`text-[9px] font-mono font-black px-2 py-0.5 rounded-full border shadow flex items-center gap-1 transition-transform hover:scale-105 cursor-pointer ${gColors.bgSolid} text-white border-white/40`}
+                    title={`Click to view ${g.name} basket`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse shrink-0" />
+                    <span>{g.name}</span>
+                    <span className="opacity-80 font-normal">({g.memberMints.length})</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <button
           onClick={onRefreshPrices}
           disabled={loadingPrices}
-          className="bg-slate-950 hover:bg-slate-850 border border-slate-800 text-slate-300 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shrink-0"
+          className="bg-slate-950 hover:bg-slate-850 border border-slate-800 text-slate-300 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shrink-0 self-start md:self-auto"
         >
           {loadingPrices ? (
             <>
@@ -539,35 +546,84 @@ export default function PriceView({
           {/* LEFT COLUMN: HERO ARENA + SELECTION BAR STRIP */}
           <div className="lg:col-span-8 flex flex-col gap-3">
 
-            {/* THE CANVAS (Hero Arena, ~600px - "HODLers & Lava") */}
+            {/* THE CANVAS (Hero Arena, ~600px - Mountain Rope Team) */}
             <div className="relative h-[600px] rounded-2xl border overflow-hidden shadow-2xl flex flex-col justify-between p-4 transition-all duration-500 bg-slate-950 border-slate-800">
             
-            {/* EPIC LAVA BRIDGE & COSMIC SKY BACKGROUND */}
-            <EpicLavaBridgeBackground maxAbsChange={maxAbsChange} />
+            {/* 1. MOUNTAIN ROPE BACKGROUND */}
+            <MountainRopeBackground maxAbsChange={maxAbsChange} />
 
-            {/* Mood Badge (Top Right) */}
-            <div className="relative z-10 flex justify-end text-[10px] font-extrabold uppercase tracking-widest pointer-events-none">
-              <div className="flex items-center gap-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800 backdrop-blur-sm">
+            {/* 2. TOP ARENA HEADER: MOUNTAIN WEATHER BADGE */}
+            <div className="relative z-30 flex items-center justify-end text-[10px]">
+              <div className="flex items-center gap-1.5 bg-slate-900/90 px-2.5 py-1 rounded-lg border border-slate-800 backdrop-blur-sm pointer-events-none font-extrabold uppercase tracking-widest shadow-sm">
                 {maxAbsChange > 20 ? (
-                  <span className="flex items-center gap-1 text-rose-400 font-bold">
-                    <span>🌋</span> Erupting
+                  <span className="flex items-center gap-1 text-slate-300 font-bold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+                    STORM
                   </span>
                 ) : maxAbsChange >= 5 ? (
-                  <span className="flex items-center gap-1 text-amber-300 font-bold">
-                    <span>⛅</span> Rumbling
+                  <span className="flex items-center gap-1 text-slate-300 font-bold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    GUSTING
                   </span>
                 ) : (
-                  <span className="flex items-center gap-1 text-emerald-300 font-bold">
-                    <span>☀️</span> Dormant
+                  <span className="flex items-center gap-1 text-slate-400 font-bold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                    CLEAR
                   </span>
                 )}
-                <span className="text-slate-400 font-mono text-[9px] font-normal border-l border-slate-700/80 pl-1.5">
+                <span className="text-slate-500 font-mono text-[9px] font-normal border-l border-slate-700/80 pl-1.5">
                   {maxAbsChange.toFixed(1)}% MAX
                 </span>
               </div>
             </div>
 
-            {/* BUBBLE FIELD */}
+            {/* 3. CLIMBING ROPE PERCENT AXIS (Right Edge) */}
+            <div className="absolute right-2 top-8 bottom-8 w-14 z-20 pointer-events-none select-none">
+              {/* Rope line */}
+              <div
+                className="absolute top-0 bottom-0 left-[3px] w-[2px] rounded-full opacity-60"
+                style={{
+                  background: 'linear-gradient(180deg, #92704f 0%, #78583c 50%, #5c432d 100%)',
+                }}
+              />
+              {/* Knots & Mono percent labels along the rope */}
+              {[
+                { value: 10, label: '+10%' },
+                { value: 5, label: '+5%' },
+                { value: 0, label: '0.0%' },
+                { value: -5, label: '-5%' },
+                { value: -10, label: '-10%' },
+              ].map((tick) => {
+                const topPct = 50 - Math.tanh(tick.value / 6) * 42;
+                const isZero = tick.value === 0;
+                return (
+                  <div
+                    key={tick.value}
+                    style={{ top: `${topPct}%` }}
+                    className="absolute left-0 -translate-y-1/2 flex items-center gap-1.5"
+                  >
+                    {/* Knot dot centered on rope line */}
+                    <div
+                      className={`rounded-full shrink-0 shadow-sm ${
+                        isZero
+                          ? 'w-2 h-2 bg-slate-300 border border-slate-600'
+                          : 'w-2 h-2 bg-[#a16207] border border-[#78350f]'
+                      }`}
+                    />
+                    {/* Mono Label */}
+                    <span
+                      className={`font-mono text-[9px] font-bold tracking-tight whitespace-nowrap ${
+                        isZero ? 'text-slate-200' : 'text-slate-400'
+                      }`}
+                    >
+                      {tick.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 4. BUBBLE FIELD */}
             <div className="absolute inset-x-4 top-10 bottom-12 z-20">
               {positionedArenaCoins.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 space-y-2">
@@ -576,195 +632,37 @@ export default function PriceView({
                   <p className="text-[10px] text-slate-600">Connect a wallet or deposit tokens to view your Arena.</p>
                 </div>
               ) : (
-                positionedArenaCoins.map(({ coin, diameter, xPercent, topPercent }) => {
+                positionedArenaCoins.map(({ coin, tileSide, xPercent, topPercent }) => {
                   const change = coin.change24h || 0;
-                  const DEAD_ZONE = 1.5;
 
                   // Owning group color / basket
                   const owningGroup = groups.find((g) => g.memberMints.includes(coin.mint));
                   const gColors = owningGroup ? getGroupColorClasses(owningGroup.color) : null;
-
                   const isSelected = selectedMint === coin.mint;
-                  const isDead = coin.price === 0 || change <= -50;
-                  const isSky = topPercent < 48;
-                  const isLava = topPercent > 52;
-                  const isWinner = !isDead && (change > DEAD_ZONE || isSky);
-                  const isLoser = !isDead && (change < -DEAD_ZONE || isLava);
-
-                  // Zone background & shadow classes matching the epic scene
-                  let zoneStyleClass = 'bg-gradient-to-br from-slate-900 via-stone-900 to-slate-950 border-slate-700/80 shadow-[0_0_12px_rgba(217,119,6,0.35)]';
-
-                  if (isDead) {
-                    zoneStyleClass = 'bg-gradient-to-br from-stone-950 to-neutral-900 border-stone-800 shadow-[0_0_8px_rgba(0,0,0,0.9)] opacity-60 grayscale';
-                  } else if (isSky) {
-                    zoneStyleClass = 'bg-gradient-to-br from-indigo-950/95 via-purple-950/90 to-slate-900/95 border-indigo-400/60 shadow-[0_0_20px_rgba(147,51,234,0.6)]';
-                  } else if (isLava) {
-                    zoneStyleClass = 'bg-gradient-to-br from-rose-950/95 via-amber-950/90 to-slate-950/95 border-orange-500/70 shadow-[0_0_24px_rgba(249,115,22,0.85)]';
-                  }
-
-                  // Override with basket solid color if assigned
-                  const basketBorderRing = gColors ? `ring-2 ${gColors.ring} ${gColors.border}` : '';
-
-                  // Eye & Face sizing
-                  const eyeSize = Math.max(9, Math.round(diameter * 0.25));
-                  const pupilSize = Math.max(4, Math.round(eyeSize * 0.5));
-                  const mouthWidth = Math.max(12, Math.round(diameter * 0.35));
 
                   return (
                     <div
                       key={coin.mint}
-                      onClick={() => setSelectedMint((prev) => (prev === coin.mint ? null : coin.mint))}
                       style={{
                         top: `${topPercent}%`,
                         left: `${xPercent}%`,
                         transform: 'translate(-50%, -50%)',
-                        width: `${diameter}px`,
-                        height: `${diameter}px`,
                       }}
-                      className={`absolute cursor-pointer rounded-full transition-all duration-300 flex flex-col items-center justify-center border ${zoneStyleClass} ${basketBorderRing} ${
-                        isWinner
-                          ? 'animate-winner-bob'
-                          : isLoser
-                          ? 'animate-loser-wobble'
-                          : ''
-                      } ${
-                        isSelected
-                          ? 'ring-4 ring-amber-400 ring-offset-2 ring-offset-slate-950 scale-110 z-40'
-                          : 'hover:scale-110 hover:z-30'
-                      }`}
-                      title={`${coin.symbol}: ${change >= 0 ? '+' : ''}${change.toFixed(1)}% ($${coin.usdValue.toFixed(2)})`}
+                      className="absolute z-20"
                     >
-                      {/* BASKET TAG BADGE ABOVE BUBBLE */}
-                      {owningGroup && gColors && (
-                        <div
-                          className={`absolute -top-3 left-1/2 -translate-x-1/2 text-[7px] font-mono font-black uppercase tracking-wider px-1.5 py-0.2 rounded-full border shadow-lg flex items-center gap-1 z-30 whitespace-nowrap ${gColors.bgSolid} text-white border-white/50 backdrop-blur-md`}
-                          title={`Basket: ${owningGroup.name}`}
-                        >
-                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse shrink-0" />
-                          <span>{owningGroup.name}</span>
-                        </div>
-                      )}
-
-                      {/* WINGS FOR WINNERS IN COSMIC SKY */}
-                      {isWinner && (
-                        <>
-                          <div className="absolute top-1/2 -left-3.5 -translate-y-1/2 pointer-events-none z-0 animate-wing-flap-left">
-                            <svg viewBox="0 0 24 24" className="w-4 h-4 text-indigo-300 fill-indigo-300/90 drop-shadow-[0_0_6px_rgba(168,85,247,0.8)]">
-                              <path d="M22 12C15 12 10 6 2 2C6 10 10 16 22 12Z" />
-                            </svg>
-                          </div>
-                          <div className="absolute top-1/2 -right-3.5 -translate-y-1/2 pointer-events-none z-0 animate-wing-flap-right">
-                            <svg viewBox="0 0 24 24" className="w-4 h-4 text-indigo-300 fill-indigo-300/90 drop-shadow-[0_0_6px_rgba(168,85,247,0.8)]">
-                              <path d="M2 12C9 12 14 6 22 2C18 10 14 16 2 12Z" />
-                            </svg>
-                          </div>
-                        </>
-                      )}
-
-                      {/* STAR SPARKLE FOR TOP SKY WINNERS */}
-                      {isSky && change > 0 && !isDead && (
-                        <div className="absolute -top-1.5 right-0 pointer-events-none z-20 text-[10px] animate-pulse">
-                          ✨
-                        </div>
-                      )}
-
-                      {/* FLAME LICKS FOR DEEP LOSERS IN LAVA */}
-                      {(isLava || change < -5) && !isDead && (
-                        <div className="absolute -bottom-2 inset-x-0 flex justify-center gap-0.5 pointer-events-none z-20 animate-bounce">
-                          <span className="text-[10px]">🔥</span>
-                        </div>
-                      )}
-
-                      {/* CRACK OVERLAY FOR DEAD COINS */}
-                      {isDead && (
-                        <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-60 text-slate-950" viewBox="0 0 100 100">
-                          <path d="M 20 20 L 45 50 L 35 80 M 45 50 L 75 40 M 75 40 L 85 75" stroke="currentColor" strokeWidth="4" fill="none" />
-                        </svg>
-                      )}
-
-                      {/* TOKEN LOGO BACKDROP WATERMARK */}
-                      <div className="absolute inset-0 flex items-center justify-center opacity-20 pointer-events-none rounded-full overflow-hidden scale-75">
-                        <TokenLogo logoURI={coin.logoURI} symbol={coin.symbol} size="md" />
-                      </div>
-
-                      {/* CHARACTER EYES */}
-                      {isDead ? (
-                        <div className="flex items-center justify-center gap-1.5 pointer-events-none z-10 text-slate-950 font-black text-xs select-none">
-                          <span>✕</span>
-                          <span>✕</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-center gap-1 my-0.5 pointer-events-none z-10">
-                          {/* Left Eye */}
-                          <div
-                            style={{ width: `${eyeSize}px`, height: `${eyeSize}px` }}
-                            className="rounded-full bg-white flex items-center justify-center shadow-inner border border-slate-900/40 overflow-hidden shrink-0"
-                          >
-                            <div
-                              style={{
-                                width: `${pupilSize}px`,
-                                height: `${pupilSize}px`,
-                                transform: isWinner ? 'translateY(25%)' : isLoser ? 'translateY(-25%)' : 'translateY(0)',
-                              }}
-                              className="rounded-full bg-slate-950 transition-transform duration-300"
-                            />
-                          </div>
-                          {/* Right Eye */}
-                          <div
-                            style={{ width: `${eyeSize}px`, height: `${eyeSize}px` }}
-                            className="rounded-full bg-white flex items-center justify-center shadow-inner border border-slate-900/40 relative overflow-hidden shrink-0"
-                          >
-                            <div
-                              style={{
-                                width: `${pupilSize}px`,
-                                height: `${pupilSize}px`,
-                                transform: isWinner ? 'translateY(25%)' : isLoser ? 'translateY(-25%)' : 'translateY(0)',
-                              }}
-                              className="rounded-full bg-slate-950 transition-transform duration-300"
-                            />
-                            {/* Sweat Drop for Losers */}
-                            {isLoser && (
-                              <span className="absolute -top-1 -right-1 text-[7px] animate-pulse">💧</span>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* CHARACTER MOUTH */}
-                      <div className="pointer-events-none z-10 flex justify-center -mt-0.5">
-                        {isWinner ? (
-                          <svg width={mouthWidth} height="7" viewBox="0 0 20 7" fill="none">
-                            <path d="M 2 2 Q 10 8 18 2" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" />
-                          </svg>
-                        ) : isLoser ? (
-                          <svg width={mouthWidth} height="7" viewBox="0 0 20 7" fill="none">
-                            <path d="M 2 6 Q 10 1 18 6" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" />
-                          </svg>
-                        ) : isDead ? (
-                          <svg width={mouthWidth} height="6" viewBox="0 0 20 6" fill="none">
-                            <path d="M 2 2 L 7 5 L 12 2 L 17 5" stroke="rgba(255,255,255,0.8)" strokeWidth="2" strokeLinecap="round" />
-                          </svg>
-                        ) : (
-                          <svg width={mouthWidth} height="5" viewBox="0 0 20 5" fill="none">
-                            <path d="M 4 2.5 L 16 2.5" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" />
-                          </svg>
-                        )}
-                      </div>
-
-                      {/* SYMBOL + % + USD VALUE PILL BELOW BUBBLE */}
-                      <div className="absolute -bottom-5.5 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-slate-950/90 border border-slate-700/80 px-2 py-0.5 rounded-full shadow-xl z-20 pointer-events-none whitespace-nowrap backdrop-blur-md">
-                        <span className="font-extrabold text-[8px] text-white tracking-tight">{coin.symbol}</span>
-                        <span
-                          className={`text-[7px] font-mono font-bold px-1 rounded-full ${
-                            change >= 0 ? 'bg-emerald-950/90 text-emerald-300 border border-emerald-500/30' : 'bg-rose-950/90 text-rose-300 border border-rose-500/30'
-                          }`}
-                        >
-                          {change >= 0 ? '+' : ''}{change.toFixed(1)}%
-                        </span>
-                        <span className="text-[7px] font-mono text-slate-300 font-semibold ml-0.5">
-                          ${coin.usdValue >= 1000 ? `${(coin.usdValue / 1000).toFixed(1)}k` : coin.usdValue.toFixed(0)}
-                        </span>
-                      </div>
+                      <PixelCharacterSprite
+                        symbol={coin.symbol}
+                        mint={coin.mint}
+                        change24h={change}
+                        usdValue={coin.usdValue}
+                        tileSide={tileSide}
+                        owningGroup={owningGroup}
+                        gColors={gColors}
+                        isSelected={isSelected}
+                        topPercent={topPercent}
+                        logoURI={coin.logoURI}
+                        onClick={() => setSelectedMint((prev) => (prev === coin.mint ? null : coin.mint))}
+                      />
                     </div>
                   );
                 })
@@ -778,10 +676,12 @@ export default function PriceView({
             {selectedCoinObj ? (
               <>
                 <div className="flex items-center gap-2 min-w-0">
-                  <TokenLogo logoURI={selectedCoinObj.logoURI} symbol={selectedCoinObj.symbol} size="sm" />
+                  <TokenLink mint={selectedCoinObj.mint} showIcon>
+                    <TokenLogo logoURI={selectedCoinObj.logoURI} symbol={selectedCoinObj.symbol} size="sm" />
+                    <strong className="text-white font-extrabold text-xs">{selectedCoinObj.symbol}</strong>
+                  </TokenLink>
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <strong className="text-white font-extrabold text-xs">{selectedCoinObj.symbol}</strong>
                       <span className={`text-[9px] font-bold font-mono px-1 rounded ${
                         (selectedCoinObj.change24h || 0) >= 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'
                       }`}>
@@ -871,23 +771,23 @@ export default function PriceView({
 
                 <div className="flex items-center justify-between gap-2">
                   {/* From Token Selector Button */}
-                  <div className="relative">
+                  <div className="relative shrink-0">
                     <button
                       onClick={() => {
                         setShowFromDropdown(!showFromDropdown);
                         setShowIntoDropdown(false);
                       }}
-                      className="bg-slate-900 hover:bg-slate-850 border border-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors"
+                      className="bg-slate-900 hover:bg-slate-850 border border-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
                     >
                       {fromToken ? (
                         <>
                           <TokenLogo logoURI={fromToken.logoURI} symbol={fromToken.symbol} size="sm" />
-                          <span>{fromToken.symbol}</span>
+                          <span className="whitespace-nowrap shrink-0">{fromToken.symbol}</span>
                         </>
                       ) : (
-                        <span className="text-slate-400">Select token</span>
+                        <span className="text-slate-400 whitespace-nowrap shrink-0">Select token</span>
                       )}
-                      <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                     </button>
 
                     {/* From Dropdown List */}
@@ -921,7 +821,7 @@ export default function PriceView({
                   </div>
 
                   {/* Amount Input */}
-                  <div className="flex flex-col items-end">
+                  <div className="flex flex-col items-end min-w-0 flex-1">
                     <input
                       type="number"
                       placeholder="0.0"
@@ -930,7 +830,7 @@ export default function PriceView({
                       className="w-full text-right bg-transparent text-white font-mono font-bold text-base focus:outline-none placeholder:text-slate-600"
                     />
                     {fromToken && fromAmount && !isNaN(parseFloat(fromAmount)) && parseFloat(fromAmount) > 0 && (
-                      <div className="text-[10px] text-slate-400 text-right font-mono pt-0.5">
+                      <div className="text-[10px] text-slate-400 text-right font-mono pt-0.5 truncate w-full">
                         ≈ ${(parseFloat(fromAmount) * (fromToken.price || prices[fromToken.mint]?.price || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </div>
                     )}
@@ -992,23 +892,23 @@ export default function PriceView({
 
                 <div className="flex items-center justify-between gap-2">
                   {/* Into Token Selector Button */}
-                  <div className="relative">
+                  <div className="relative shrink-0">
                     <button
                       onClick={() => {
                         setShowIntoDropdown(!showIntoDropdown);
                         setShowFromDropdown(false);
                       }}
-                      className="bg-slate-900 hover:bg-slate-850 border border-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors"
+                      className="bg-slate-900 hover:bg-slate-850 border border-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
                     >
                       {intoToken ? (
                         <>
                           <TokenLogo logoURI={intoToken.logoURI} symbol={intoToken.symbol} size="sm" />
-                          <span>{intoToken.symbol}</span>
+                          <span className="whitespace-nowrap shrink-0">{intoToken.symbol}</span>
                         </>
                       ) : (
-                        <span className="text-slate-400">Select token</span>
+                        <span className="text-slate-400 whitespace-nowrap shrink-0">Select token</span>
                       )}
-                      <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                     </button>
 
                     {/* Into Dropdown List with Search */}
@@ -1058,8 +958,8 @@ export default function PriceView({
                   </div>
 
                   {/* Quoted Output Display */}
-                  <div className="text-right">
-                    <div className="font-mono font-bold text-base text-emerald-400">
+                  <div className="text-right min-w-0 flex-1">
+                    <div className="font-mono font-bold text-base text-emerald-400 truncate">
                       {quoting ? (
                         <Loader2 className="w-4 h-4 animate-spin text-emerald-400 ml-auto" />
                       ) : quote && quote.outAmount ? (
@@ -1069,7 +969,7 @@ export default function PriceView({
                       )}
                     </div>
                     {intoToken && (
-                      <div className="text-[10px] text-slate-400 font-mono pt-0.5">
+                      <div className="text-[10px] text-slate-400 font-mono pt-0.5 truncate">
                         {quote && quote.outAmount ? (
                           (() => {
                             const units = parseInt(quote.outAmount, 10) / Math.pow(10, intoToken.decimals || 6);
@@ -1222,17 +1122,19 @@ export default function PriceView({
                               <tr
                                 key={item.mint}
                                 onClick={() => handleRowClick(row)}
-                                className={`hover:bg-slate-850/30 transition-all cursor-pointer text-xs font-mono group border-b border-slate-850/30 ${
-                                  isCrashed ? 'bg-rose-950/10 border-l-2 border-l-rose-500' : ''
-                                }`}
+                                className={`hover:bg-slate-850/40 transition-all cursor-pointer text-xs font-mono group border-b border-slate-850/30 ${
+                                  gColors ? `border-l-4 ${gColors.borderL}` : 'border-l-4 border-l-slate-800'
+                                } ${isCrashed ? 'bg-rose-950/15' : ''}`}
                                 title={`Click to view in ${owningGroup ? `basket: ${owningGroup.name}` : 'wallet inventory'}`}
                               >
                                 {/* Coin column */}
                                 <td className="py-3 px-4 flex items-center gap-2 font-sans">
-                                  <TokenLogo logoURI={item.logoURI} symbol={item.symbol} size="sm" />
+                                  <TokenLink mint={item.mint} showIcon>
+                                    <TokenLogo logoURI={item.logoURI} symbol={item.symbol} size="sm" />
+                                    <strong className="text-white font-extrabold text-xs block">{item.symbol}</strong>
+                                  </TokenLink>
                                   <div className="min-w-0 leading-none">
                                     <div className="flex items-center gap-1.5">
-                                      <strong className="text-white font-extrabold text-xs block">{item.symbol}</strong>
                                       {isCrashed && (
                                         <span className="bg-rose-500/20 text-rose-400 text-[8px] font-black uppercase px-1 rounded">
                                           DROP
@@ -1273,8 +1175,8 @@ export default function PriceView({
                                 {/* Basket column */}
                                 <td className="py-3 px-4 text-right">
                                   {owningGroup && gColors ? (
-                                    <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-300">
-                                      <span className={`w-1.5 h-1.5 rounded-full ${gColors.bgSolid}`} />
+                                    <span className={`inline-flex items-center gap-1.5 text-[9px] font-mono font-black uppercase px-2 py-0.5 rounded-full ${gColors.bgSolid} text-white shadow`}>
+                                      <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
                                       {owningGroup.name}
                                     </span>
                                   ) : (
@@ -1329,10 +1231,12 @@ export default function PriceView({
                                   >
                                     {/* Coin column */}
                                     <td className="py-2.5 px-4 flex items-center gap-2 font-sans">
-                                      <TokenLogo logoURI={item.logoURI} symbol={item.symbol} size="sm" />
+                                      <TokenLink mint={item.mint} showIcon>
+                                        <TokenLogo logoURI={item.logoURI} symbol={item.symbol} size="sm" />
+                                        <strong className="text-white font-extrabold text-xs block">{item.symbol}</strong>
+                                      </TokenLink>
                                       <div className="min-w-0 leading-none">
                                         <div className="flex items-center gap-1.5">
-                                          <strong className="text-white font-extrabold text-xs block">{item.symbol}</strong>
                                           {isCrashed && (
                                             <span className="bg-rose-500/20 text-rose-400 text-[8px] font-black uppercase px-1 rounded">
                                               DROP
