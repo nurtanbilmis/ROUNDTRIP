@@ -16,6 +16,7 @@ You group coins into baskets ("link-groups") with target weights. When prices mo
 - **Presets** to start quickly: Steady, Majors, AI & Tech, High Beta.
 - **Harvest ledger**: an append-only record of every rebalance swap, valued at current prices.
 - **Market Intel**: prices, 24h changes, and quick swaps.
+- **Backup**: export your baskets and harvest history to a file and import them in another browser (⚙️ Settings → Backup).
 - **Wallet tools**: hide dust, convert small balances to SOL, close empty token accounts to reclaim rent.
 - **Leaderboard** for community competitions: hidden between seasons, configured in `src/competition.ts`.
 
@@ -40,7 +41,7 @@ Both are rate-limited per IP address. Open either route in a browser for a healt
 - [`server.ts`](server.ts): an Express server, for local development or any Node host
 - [`api/rpc.ts`](api/rpc.ts) and [`api/jup.ts`](api/jup.ts): Vercel serverless functions
 
-Baskets and the harvest ledger are stored in the browser (`localStorage`), per wallet address.
+Baskets and the harvest ledger are stored in the browser (`localStorage`), per wallet address. Settings → Backup exports them to a JSON file (format documented in [`src/backup.ts`](src/backup.ts)) and imports them again, skipping duplicates.
 
 ## Run it locally
 

@@ -22,6 +22,7 @@ import { useTokenViewer } from './tokenViewer';
 import { DEFAULT_RPC_URL } from './rpc';
 import { Token, TokenBalance, LinkGroup, HarvestEvent, getGroupColorClasses, formatPrice, COIN_METADATA, DEFAULT_POPULAR_MINTS } from './types';
 import { fetchPricesAndInfo, fetchQuote } from './jupiter';
+import { buildBackup, downloadBackup, parseBackup, mergeBackup, ParsedBackup } from './backup';
 import {
   Wallet,
   Settings,
@@ -205,6 +206,60 @@ function Dashboard() {
 
   // Harvest event ledger
   const [harvestLedger, setHarvestLedger] = useState<HarvestEvent[]>([]);
+
+  // Backup: export / import baskets + harvest ledger (moving browsers or domains)
+  const [backupMsg, setBackupMsg] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
+  const [pendingImport, setPendingImport] = useState<ParsedBackup | null>(null);
+  const backupFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleExportBackup = () => {
+    const backup = buildBackup(activeNamespace, groups, harvestLedger);
+    downloadBackup(backup);
+    setBackupMsg({
+      type: 'ok',
+      text: `Exported ${groups.length} basket${groups.length === 1 ? '' : 's'} and ${harvestLedger.length} harvest swap${harvestLedger.length === 1 ? '' : 's'}.`,
+    });
+  };
+
+  const handleBackupFileChosen = async (file: File | undefined) => {
+    setBackupMsg(null);
+    setPendingImport(null);
+    if (!file) return;
+    try {
+      const parsed = parseBackup(await file.text());
+      const from = parsed.backup.wallet;
+      if (from !== 'guest' && from !== activeNamespace) {
+        throw new Error(
+          `This backup belongs to wallet ${from.slice(0, 4)}…${from.slice(-4)}. Connect that wallet first, then import.`
+        );
+      }
+      setPendingImport(parsed);
+    } catch (err: any) {
+      setBackupMsg({ type: 'error', text: err?.message || 'Could not read this file.' });
+    } finally {
+      if (backupFileInputRef.current) backupFileInputRef.current.value = '';
+    }
+  };
+
+  const handleConfirmImport = () => {
+    if (!pendingImport) return;
+    if (hydratedNamespace !== activeNamespace) {
+      setBackupMsg({ type: 'error', text: 'Still loading your data. Try again in a moment.' });
+      return;
+    }
+    const result = mergeBackup(groups, harvestLedger, pendingImport.backup);
+    setGroups(result.groups);
+    setHarvestLedger(result.harvestLedger);
+    const skipped = pendingImport.skippedGroups + pendingImport.skippedEvents;
+    setBackupMsg({
+      type: 'ok',
+      text:
+        `Imported ${result.addedGroups} basket${result.addedGroups === 1 ? '' : 's'} and ${result.addedEvents} harvest swap${result.addedEvents === 1 ? '' : 's'}.` +
+        (result.addedGroups + result.addedEvents === 0 ? ' Everything was already here.' : '') +
+        (skipped > 0 ? ` ${skipped} damaged entr${skipped === 1 ? 'y was' : 'ies were'} skipped.` : ''),
+    });
+    setPendingImport(null);
+  };
 
   // Load and migrate groups and harvest ledger for activeNamespace
   useEffect(() => {
@@ -1092,6 +1147,70 @@ function Dashboard() {
                         Paste a private RPC URL. Never share this URL publicly.
                       </p>
                     </div>
+                  )}
+                </div>
+
+                <hr className="border-slate-850" />
+
+                {/* Backup: move baskets + harvest history between browsers or domains */}
+                <div className="space-y-1.5">
+                  <h4 className="font-bold text-white uppercase tracking-wider">Backup</h4>
+                  <p className="text-[9px] text-slate-500 leading-normal">
+                    Baskets and harvest history are saved in this browser only. Export them to move to another browser or device.
+                  </p>
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      onClick={handleExportBackup}
+                      className="py-1.5 text-[10px] font-extrabold rounded-lg border border-slate-700 text-slate-200 hover:border-emerald-500 hover:text-white cursor-pointer transition-all"
+                    >
+                      Export
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => backupFileInputRef.current?.click()}
+                      className="py-1.5 text-[10px] font-extrabold rounded-lg border border-slate-700 text-slate-200 hover:border-emerald-500 hover:text-white cursor-pointer transition-all"
+                    >
+                      Import
+                    </button>
+                  </div>
+                  <input
+                    ref={backupFileInputRef}
+                    type="file"
+                    accept="application/json,.json"
+                    className="hidden"
+                    onChange={(e) => handleBackupFileChosen(e.target.files?.[0])}
+                  />
+                  {pendingImport && (
+                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-2 space-y-1.5">
+                      <p className="text-[10px] text-slate-300 leading-normal">
+                        Import {pendingImport.backup.groups.length} basket{pendingImport.backup.groups.length === 1 ? '' : 's'} and{' '}
+                        {pendingImport.backup.harvestLedger.length} harvest swap{pendingImport.backup.harvestLedger.length === 1 ? '' : 's'}
+                        {pendingImport.backup.exportedAt ? ` exported ${new Date(pendingImport.backup.exportedAt).toLocaleDateString()}` : ''}?
+                        Your current data is kept; duplicates are skipped.
+                      </p>
+                      <div className="grid grid-cols-2 gap-1">
+                        <button
+                          type="button"
+                          onClick={handleConfirmImport}
+                          className="py-1 text-[10px] font-extrabold rounded bg-emerald-500 text-slate-950 cursor-pointer"
+                        >
+                          Import
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPendingImport(null)}
+                          className="py-1 text-[10px] font-extrabold rounded border border-slate-700 text-slate-400 hover:text-white cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {backupMsg && (
+                    <p className={`text-[10px] leading-normal ${backupMsg.type === 'ok' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {backupMsg.text}
+                    </p>
                   )}
                 </div>
 
