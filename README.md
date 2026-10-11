@@ -6,7 +6,7 @@ You group coins into baskets ("link-groups") with target weights. When prices mo
 
 - **Non-custodial.** Every swap is built in your browser and signed by your own wallet. No contract, bot or server can move your funds.
 - **Swaps route through [Jupiter](https://jup.ag)**, so you get the best available route on Solana.
-- **Honest P&L.** Harvest is recorded from confirmed on-chain balance changes of Round Trip's own swaps, so airdrops and transfers don't distort it.
+- **P&L (Work in Progress)** Harvest is recorded from confirmed on-chain balance changes of Round Trip's own swaps, so airdrops and transfers don't distort it.
 
 > Coin selection is the entire risk. A rebalancer keeps buying a coin that keeps falling. Pick coins you would hold through a full cycle. This is not financial advice.
 
@@ -59,8 +59,8 @@ npm run dev                  # http://localhost:3000
 
 | Variable | Where it's used | Required | Notes |
 | --- | --- | --- | --- |
-| `RPC_UPSTREAM_URL` | Server only | Yes, for `/api/rpc` | Private Solana RPC URL including its token (Triton, Helius, QuickNode, …). Never prefix with `VITE_`. `TRITON_RPC_URL` is accepted too. |
-| `JUP_API_KEY` | Server only | Recommended | Key from [portal.jup.ag](https://portal.jup.ag). Never prefix with `VITE_`. Without a key Jupiter is heavily rate-limited. |
+| `RPC_UPSTREAM_URL` | Server only | Yes, for `/api/rpc` | Private Solana RPC URL including its token (Triton, Helius, QuickNode, …). `TRITON_RPC_URL` is accepted too. |
+| `JUP_API_KEY` | Server only | Recommended | Key from [portal.jup.ag](https://portal.jup.ag).Without a key Jupiter is heavily rate-limited. |
 | `RPC_ORIGIN` | Server only | No | Site address sent to the RPC provider as `Origin`, for providers that whitelist by domain. Defaults to the address the site is served on. |
 | `VITE_PUBLIC_RPC_URL` | Browser (public) | No, fallback only | Makes the browser call the RPC directly instead of `/api/rpc`. Use only if the provider refuses server-side calls. The URL becomes visible to every visitor, so lock it to your domain. Requires a redeploy. |
 
