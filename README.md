@@ -61,6 +61,8 @@ npm run dev                  # http://localhost:3000
 | --- | --- | --- | --- |
 | `RPC_UPSTREAM_URL` | Server only | Yes, for `/api/rpc` | Private Solana RPC URL including its token (Triton, Helius, QuickNode, …). Never prefix with `VITE_`. `TRITON_RPC_URL` is accepted too. |
 | `JUP_API_KEY` | Server only | Recommended | Key from [portal.jup.ag](https://portal.jup.ag). Never prefix with `VITE_`. Without a key Jupiter is heavily rate-limited. |
+| `RPC_ORIGIN` | Server only | No | Site address sent to the RPC provider as `Origin`, for providers that whitelist by domain. Defaults to the address the site is served on. |
+| `VITE_PUBLIC_RPC_URL` | Browser (public) | No, fallback only | Makes the browser call the RPC directly instead of `/api/rpc`. Use only if the provider refuses server-side calls. The URL becomes visible to every visitor, so lock it to your domain. Requires a redeploy. |
 
 Without `RPC_UPSTREAM_URL`, `/api/rpc` answers "RPC not configured". You can still use the app by entering your own RPC URL under ⚙️ Settings → Custom RPC.
 
@@ -78,8 +80,18 @@ Without `RPC_UPSTREAM_URL`, `/api/rpc` answers "RPC not configured". You can sti
 ### Vercel (recommended)
 
 1. Import the repository in Vercel (**Add New → Project**). The Vite preset is detected automatically; `vercel.json` sets the rest.
-2. Under **Settings → Environment Variables**, add `RPC_UPSTREAM_URL` and `JUP_API_KEY` as **Secret** for Production and Preview.
-3. Deploy. Each pull request gets its own preview URL.
+2. Under **Settings → Environment Variables**, add `RPC_UPSTREAM_URL` and `JUP_API_KEY`, marked **Sensitive**, with **both Production and Preview** ticked. If Preview is left out, pull-request previews show an empty wallet.
+3. Deploy, then add your domain under **Settings → Domains**.
+4. Check the deploy: open `https://<your-domain>/api/rpc?check=1` and `https://<your-domain>/api/jup?check=1`. Both should say `"ok": true`. Secrets are never shown.
+
+Environment variables only reach deployments made *after* they are saved. After adding or changing one, redeploy.
+
+#### RPC providers that block server calls
+
+Some RPC endpoints (Triton, for example) are set up for browsers and refuse calls from cloud servers. `/api/rpc?check=1` then reports `upstreamStatus: 403` and *"Your IP or provider is blocked from this endpoint"*. A domain whitelist alone doesn't fix this. Either:
+
+- **Recommended:** ask the provider to allow server-side (backend) calls for the endpoint. The RPC URL then stays private.
+- **Fallback:** set `VITE_PUBLIC_RPC_URL` to the endpoint, whitelist your domain with the provider, and redeploy. The browser then calls the RPC directly and the URL is visible to visitors.
 
 ### Any Node host
 

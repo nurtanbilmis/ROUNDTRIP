@@ -25,4 +25,4 @@ Out of scope: bugs in third-party services (Jupiter, DexScreener, RPC providers,
 ## Design notes
 
 - The app is non-custodial: every transaction is signed by the user's wallet.
-- The private RPC URL and the Jupiter key are server-side only. `VITE_` variables are bundled into the browser and are public by design, so no secret may use that prefix.
+- The private RPC URL and the Jupiter key are server-side only. `VITE_` variables are bundled into the browser and are public by design, so no secret may use that prefix. The one exception is the optional `VITE_PUBLIC_RPC_URL` fallback, which is public on purpose and must be domain-locked with the RPC provider.

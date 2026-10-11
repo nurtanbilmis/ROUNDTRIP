@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { PublicKey, VersionedTransaction, Transaction } from '@solana/web3.js';
 import { WalletType } from '../types';
 import { buildSwapTransaction, fetchQuote } from '../jupiter';
-import { createConnection, DEFAULT_RPC_URL } from '../rpc';
+import { createConnection, DEFAULT_RPC_URL, wsEndpointFor } from '../rpc';
 import {
   ConnectionProvider,
   WalletProvider as SolanaBaseWalletProvider,
@@ -770,7 +770,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       endpoint={rpcUrl}
       config={{
         commitment: 'confirmed',
-        wsEndpoint: rpcUrl === DEFAULT_RPC_URL ? 'wss://api.mainnet-beta.solana.com' : undefined,
+        wsEndpoint: wsEndpointFor(rpcUrl),
       }}
     >
       <SolanaBaseWalletProvider wallets={wallets} autoConnect>
