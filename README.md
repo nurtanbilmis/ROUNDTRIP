@@ -25,16 +25,21 @@ You group coins into baskets ("link-groups") with target weights. When prices mo
 ```
 Browser (React + Vite)
  ├─ Wallet adapter (Phantom, Solflare, Backpack, …) ── signs every transaction
- ├─ Jupiter API ── quotes, swap transactions, prices, token search
  ├─ DexScreener API ── fallback prices and 24h changes
- └─ /api/rpc ── our own server route
-                 └─ forwards allowed Solana RPC methods to a private RPC (URL kept server-side)
+ ├─ /api/rpc ── our server route → private Solana RPC (URL kept server-side)
+ └─ /api/jup ── our server route → Jupiter API (key kept server-side)
+                 quotes, swap transactions, prices, token search
 ```
 
-The app is mostly client-side. The one server piece is `/api/rpc`: it keeps the paid RPC URL out of the browser. It only allows the RPC methods the app needs, and rate-limits each IP address. The logic lives in [`lib/rpcProxy.ts`](lib/rpcProxy.ts) and runs two ways:
+The app is mostly client-side. Two small server routes keep paid credentials out of the browser:
+
+- **`/api/rpc`** forwards only the Solana RPC methods the app needs ([`lib/rpcProxy.ts`](lib/rpcProxy.ts)).
+- **`/api/jup`** forwards only the Jupiter endpoints the app needs ([`lib/jupProxy.ts`](lib/jupProxy.ts)). Shared data is cached for all users: prices for 20 seconds, token search for 5 minutes, the verified-token list for 1 hour. Quotes and swaps are never cached.
+
+Both are rate-limited per IP address. Open either route in a browser for a health check: it shows whether each key is set, never the values. The same logic runs two ways:
 
 - [`server.ts`](server.ts): an Express server, for local development or any Node host
-- [`api/rpc.ts`](api/rpc.ts): a Vercel serverless function
+- [`api/rpc.ts`](api/rpc.ts) and [`api/jup.ts`](api/jup.ts): Vercel serverless functions
 
 Baskets and the harvest ledger are stored in the browser (`localStorage`), per wallet address. Settings → Backup exports them to a JSON file (format documented in [`src/backup.ts`](src/backup.ts)) and imports them again, skipping duplicates.
 
@@ -55,7 +60,7 @@ npm run dev                  # http://localhost:3000
 | Variable | Where it's used | Required | Notes |
 | --- | --- | --- | --- |
 | `RPC_UPSTREAM_URL` | Server only | Yes, for `/api/rpc` | Private Solana RPC URL including its token (Triton, Helius, QuickNode, …). Never prefix with `VITE_`. `TRITON_RPC_URL` is accepted too. |
-| `VITE_JUP_API_KEY` | Browser | Recommended | Key from [portal.jup.ag](https://portal.jup.ag). Bundled into the browser code, so it is public. Without a key Jupiter is heavily rate-limited. |
+| `JUP_API_KEY` | Server only | Recommended | Key from [portal.jup.ag](https://portal.jup.ag). Never prefix with `VITE_`. Without a key Jupiter is heavily rate-limited. |
 
 Without `RPC_UPSTREAM_URL`, `/api/rpc` answers "RPC not configured". You can still use the app by entering your own RPC URL under ⚙️ Settings → Custom RPC.
 
@@ -73,7 +78,7 @@ Without `RPC_UPSTREAM_URL`, `/api/rpc` answers "RPC not configured". You can sti
 ### Vercel (recommended)
 
 1. Import the repository in Vercel (**Add New → Project**). The Vite preset is detected automatically; `vercel.json` sets the rest.
-2. Under **Settings → Environment Variables**, add `RPC_UPSTREAM_URL` and `VITE_JUP_API_KEY`.
+2. Under **Settings → Environment Variables**, add `RPC_UPSTREAM_URL` and `JUP_API_KEY` as **Secret** for Production and Preview.
 3. Deploy. Each pull request gets its own preview URL.
 
 ### Any Node host
@@ -83,13 +88,14 @@ Run `npm run build`, then `npm start`, with the same environment variables. `POR
 ## Project structure
 
 ```
-api/rpc.ts              Vercel function for /api/rpc
-lib/rpcProxy.ts         RPC proxy logic (allowlist, rate limit, forwarding)
+api/rpc.ts, api/jup.ts  Vercel functions for /api/rpc and /api/jup
+lib/rpcProxy.ts         RPC proxy logic (allowlist, rate limit, forwarding, health check)
+lib/jupProxy.ts         Jupiter proxy logic (allowlist, key, shared cache)
 server.ts               Express server (dev + Node hosting)
 src/App.tsx             Dashboard, baskets, settings
 src/components/         Views: AllocationView (basket + rebalance), PriceView (Market Intel), LeaderboardView, modals
 src/components/WalletProvider.tsx   Wallet connection, balances, swap signing
-src/jupiter.ts          Jupiter + DexScreener API calls
+src/jupiter.ts          Jupiter (via /api/jup) + DexScreener API calls
 src/rpc.ts              Solana connection helper (default = /api/rpc)
 src/presets.ts          Basket presets
 src/competition.ts      Leaderboard competition config

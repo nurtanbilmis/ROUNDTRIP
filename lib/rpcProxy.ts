@@ -6,6 +6,7 @@
  * private RPC provider using the server-side secret RPC_UPSTREAM_URL, so the paid
  * RPC URL never reaches the browser.
  */
+import { createRateLimiter } from './rateLimit.js';
 
 /** Only the methods the app actually uses. Anything else is rejected. */
 export const ALLOWED_METHODS = new Set([
@@ -28,32 +29,8 @@ export const ALLOWED_METHODS = new Set([
   'getRecentPrioritizationFees',
 ]);
 
-const RATE_LIMIT_MAX = 120;
-const RATE_LIMIT_WINDOW_MS = 10_000;
-
-// In-memory, per-instance rate limit. On serverless hosts each instance keeps its own
-// counters, so this is a soft limit that stops casual abuse, not a hard guarantee.
-const ipRateLimits = new Map<string, { count: number; resetAt: number }>();
-
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-
-  // Opportunistic cleanup so the map cannot grow without bound
-  if (ipRateLimits.size > 10_000) {
-    for (const [key, record] of ipRateLimits) {
-      if (now > record.resetAt) ipRateLimits.delete(key);
-    }
-  }
-
-  const record = ipRateLimits.get(ip);
-  if (!record || now > record.resetAt) {
-    ipRateLimits.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return true;
-  }
-  if (record.count >= RATE_LIMIT_MAX) return false;
-  record.count += 1;
-  return true;
-}
+// 120 requests per 10 seconds per IP (soft, per instance)
+const checkRateLimit = createRateLimiter(120, 10_000);
 
 export interface ProxyResult {
   status: number;
@@ -121,15 +98,14 @@ export function clientIpFrom(forwardedFor: string | null | undefined, fallback?:
 }
 
 /**
- * Health check for GET /api/rpc: shows whether the route is deployed and configured,
+ * Health check for GET /api/rpc and GET /api/jup: shows whether the routes are deployed and configured,
  * without revealing any secret. Open https://<your-site>/api/rpc in a browser.
  */
 export function healthInfo(env: Record<string, string | undefined>): string {
   return JSON.stringify({
     ok: true,
-    route: '/api/rpc',
     rpcUpstreamConfigured: Boolean(getUpstreamUrl(env)),
-    jupiterKeyConfigured: Boolean(env.VITE_JUP_API_KEY || env.VITE_JUPITER_API_KEY),
-    note: 'POST JSON-RPC requests here. Values are never shown.',
+    jupiterKeyConfigured: Boolean(env.JUP_API_KEY),
+    note: 'Shows only whether each key is set; values are never shown.',
   });
 }

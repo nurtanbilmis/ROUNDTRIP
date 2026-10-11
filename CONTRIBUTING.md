@@ -21,7 +21,7 @@ Thanks for helping out. Round Trip moves real funds, so changes are reviewed wit
 - **Balances.** Commit balance results only when every read (SOL, SPL, Token-2022) succeeded.
 - **Harvest ledger.** Use confirmed on-chain balance deltas, not quote projections. Read SOL legs from native lamports.
 - **Token decimals.** Read them on-chain; never assume 9.
-- **Secrets.** Never commit `.env*` files or put an RPC URL with a token in client code. Only `VITE_` variables reach the browser, and they are public.
+- **Secrets.** Never commit `.env*` files or put a key or token in client code. Only `VITE_` variables reach the browser, and they are public. Paid APIs go through a server route (`/api/rpc`, `/api/jup`).
 - **Transactions.** Every transaction must be built in the browser and signed by the user's wallet. Don't add anything that moves funds without an explicit signature.
 
 ## Code style
