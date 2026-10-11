@@ -1,8 +1,14 @@
 import { Token, TokenWithPrice, COIN_METADATA } from './types';
 
 // Constants
-const JUP_API_BASE = 'https://api.jup.ag';
-const TOKENS_API_BASE = 'https://api.jup.ag';
+// All Jupiter calls go through our own server route, which adds the private API key
+// (JUP_API_KEY, server-side) and caches shared data like prices. See lib/jupProxy.ts.
+const JUP_PROXY = '/api/jup';
+
+function jupUrl(endpoint: string, params: Record<string, string> = {}): string {
+  const qs = new URLSearchParams({ p: endpoint, ...params });
+  return `${JUP_PROXY}?${qs.toString()}`;
+}
 const DEXSCREENER_API_BASE = 'https://api.dexscreener.com/latest/dex';
 
 // In-memory cache for verified tokens to avoid spamming the API
@@ -17,14 +23,8 @@ export async function fetchVerifiedTokens(): Promise<Token[]> {
     return cachedTokens;
   }
 
-  const headers: Record<string, string> = {};
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
-
   try {
-    const res = await fetch(`${TOKENS_API_BASE}/tokens/v2/tag?query=verified`, { headers });
+    const res = await fetch(jupUrl('tokens/v2/tag', { query: 'verified' }));
     if (!res.ok) {
       throw new Error(`HTTP status ${res.status}`);
     }
@@ -83,14 +83,9 @@ export async function verifyJupiterToken(mint: string): Promise<Token | null> {
  */
 export async function searchJupiterTokens(query: string): Promise<(Token & { isVerified: boolean; id?: string })[]> {
   if (!query || !query.trim()) return [];
-  const headers: Record<string, string> = {};
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
 
   try {
-    const res = await fetch(`${TOKENS_API_BASE}/tokens/v2/search?query=${encodeURIComponent(query.trim())}`, { headers });
+    const res = await fetch(jupUrl('tokens/v2/search', { query: query.trim() }));
     if (!res.ok) {
       return [];
     }
@@ -215,23 +210,19 @@ export async function fetchPricesAndInfo(mints: string[]): Promise<Record<string
     found[mint] = { price: null, change24h: null };
   }
 
-  // DexScreener accepts at most 30 addresses per request
+  // DexScreener accepts at most 30 addresses per request. Sorting keeps batches (and so
+  // request URLs) identical across users, so the server-side price cache can be shared.
   const BATCH_SIZE = 30;
+  const sortedMints = [...new Set(mints)].sort();
   const batches: string[][] = [];
-  for (let i = 0; i < mints.length; i += BATCH_SIZE) {
-    batches.push(mints.slice(i, i + BATCH_SIZE));
-  }
-
-  const headers: Record<string, string> = {};
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
+  for (let i = 0; i < sortedMints.length; i += BATCH_SIZE) {
+    batches.push(sortedMints.slice(i, i + BATCH_SIZE));
   }
 
   for (const batch of batches) {
     // 1. Jupiter Price API v3
     try {
-      const res = await fetchWithRetry(`${JUP_API_BASE}/price/v3?ids=${batch.join(',')}`, { headers });
+      const res = await fetchWithRetry(jupUrl('price/v3', { ids: batch.join(',') }));
       if (res.ok) {
         const data = await res.json();
         for (const mint of batch) {
@@ -309,15 +300,9 @@ export async function fetchQuote(params: {
   }
 
   // URL construction for swap/v1/quote
-  let url = `${JUP_API_BASE}/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`;
+  const url = jupUrl('swap/v1/quote', { inputMint, outputMint, amount, slippageBps: String(slippageBps) });
 
-  const headers: Record<string, string> = {};
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
-
-  const res = await fetch(url, { headers });
+  const res = await fetch(url);
   if (!res.ok) {
     const errorText = await res.text();
     throw new Error(`Jupiter Quote API failed: ${errorText}`);
@@ -337,7 +322,7 @@ export async function buildSwapTransaction(params: {
 }): Promise<any> {
   const { quoteResponse, userPublicKey, wrapAndUnwrapSol = true } = params;
 
-  const url = `${JUP_API_BASE}/swap/v1/swap`;
+  const url = jupUrl('swap/v1/swap');
 
   const body: any = {
     quoteResponse,
@@ -350,10 +335,6 @@ export async function buildSwapTransaction(params: {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
 
   const res = await fetch(url, {
     method: 'POST',

@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { clientIpFrom, getUpstreamUrl, handleRpcRequest, healthInfo } from './lib/rpcProxy.js';
+import { getJupApiKey, getJupBase, handleJupRequest } from './lib/jupProxy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +20,20 @@ app.post('/api/rpc', express.json({ limit: '1mb' }), async (req: Request, res: R
 
 app.get('/api/rpc', (_req: Request, res: Response) => {
   res.set('Content-Type', 'application/json').send(healthInfo(process.env));
+});
+
+// Jupiter API proxy: the browser calls /api/jup?p=<endpoint>, we add the private key.
+// Shared with the Vercel function in api/jup.ts.
+app.all('/api/jup', express.text({ type: '*/*', limit: '200kb' }), async (req: Request, res: Response) => {
+  const search = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+  if (req.method === 'GET' && !new URLSearchParams(search).get('p')) {
+    res.set('Content-Type', 'application/json').send(healthInfo(process.env));
+    return;
+  }
+  const clientIp = clientIpFrom(req.headers['x-forwarded-for'] as string | undefined, req.ip || req.socket.remoteAddress);
+  const body = typeof req.body === 'string' ? req.body : null;
+  const result = await handleJupRequest(req.method, search, body, clientIp, getJupApiKey(process.env), getJupBase(process.env));
+  res.status(result.status).set(result.headers).send(result.body);
 });
 
 // Vite app serving
