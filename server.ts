@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { clientIpFrom, getUpstreamUrl, handleRpcRequest } from './lib/rpcProxy.js';
+import { clientIpFrom, getUpstreamUrl, handleRpcRequest, healthInfo } from './lib/rpcProxy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +15,10 @@ app.post('/api/rpc', express.json({ limit: '1mb' }), async (req: Request, res: R
   const clientIp = clientIpFrom(req.headers['x-forwarded-for'] as string | undefined, req.ip || req.socket.remoteAddress);
   const result = await handleRpcRequest(req.body, clientIp, getUpstreamUrl(process.env));
   res.status(result.status).set('Content-Type', 'application/json').send(result.body);
+});
+
+app.get('/api/rpc', (_req: Request, res: Response) => {
+  res.set('Content-Type', 'application/json').send(healthInfo(process.env));
 });
 
 // Vite app serving
