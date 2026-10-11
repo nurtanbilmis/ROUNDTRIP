@@ -1,6 +1,8 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { clientIpFrom, getUpstreamUrl, handleRpcRequest, healthInfo, siteOrigin, upstreamCheck } from './lib/rpcProxy.js';
+import { getJupApiKey, getJupBase, handleJupRequest, jupiterCheck } from './lib/jupProxy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -8,143 +10,32 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-// Method allowlist
-const ALLOWED_METHODS = new Set([
-  'getBalance',
-  'getTokenAccountsByOwner',
-  'getAccountInfo',
-  'getMultipleAccounts',
-  'getLatestBlockhash',
-  'getBlockHeight',
-  'getSlot',
-  'getEpochInfo',
-  'sendTransaction',
-  'simulateTransaction',
-  'getSignatureStatuses',
-  'getTransaction',
-  'getMinimumBalanceForRentExemption',
-  'getVersion',
-  'getGenesisHash',
-  'getFeeForMessage',
-  'getRecentPrioritizationFees',
-]);
-
-// In-memory rate limiting per client IP: max 120 requests per 10 seconds
-const ipRateLimits = new Map<string, { count: number; resetAt: number }>();
-
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const record = ipRateLimits.get(ip);
-  if (!record || now > record.resetAt) {
-    ipRateLimits.set(ip, { count: 1, resetAt: now + 10_000 });
-    return true;
-  }
-  if (record.count >= 120) {
-    return false;
-  }
-  record.count += 1;
-  return true;
-}
-
-// Clean up old rate limit records periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, record] of ipRateLimits.entries()) {
-    if (now > record.resetAt) {
-      ipRateLimits.delete(ip);
-    }
-  }
-}, 30_000).unref();
-
+// Solana RPC proxy: the browser calls /api/rpc, we forward to the private RPC.
+// Shared with the Vercel function in api/rpc.ts.
 app.post('/api/rpc', express.json({ limit: '1mb' }), async (req: Request, res: Response) => {
-  const clientIp =
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-    req.ip ||
-    req.socket.remoteAddress ||
-    'unknown';
+  const clientIp = clientIpFrom(req.headers['x-forwarded-for'] as string | undefined, req.ip || req.socket.remoteAddress);
+  const result = await handleRpcRequest(req.body, clientIp, getUpstreamUrl(process.env), siteOrigin(process.env, `${req.protocol}://${req.get('host')}`));
+  res.status(result.status).set('Content-Type', 'application/json').send(result.body);
+});
 
-  if (!checkRateLimit(clientIp)) {
-    res.status(429).json({
-      jsonrpc: '2.0',
-      error: { code: -32029, message: 'Too many requests' },
-      id: null,
-    });
+app.get('/api/rpc', async (req: Request, res: Response) => {
+  const body = req.query.check ? await upstreamCheck(process.env, siteOrigin(process.env, `${req.protocol}://${req.get('host')}`)) : healthInfo(process.env);
+  res.set('Content-Type', 'application/json').set('Cache-Control', 'no-store').send(body);
+});
+
+// Jupiter API proxy: the browser calls /api/jup?p=<endpoint>, we add the private key.
+// Shared with the Vercel function in api/jup.ts.
+app.all('/api/jup', express.text({ type: '*/*', limit: '200kb' }), async (req: Request, res: Response) => {
+  const search = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+  if (req.method === 'GET' && !new URLSearchParams(search).get('p')) {
+    const check = new URLSearchParams(search).get('check');
+    res.set('Content-Type', 'application/json').set('Cache-Control', 'no-store').send(check ? await jupiterCheck(process.env) : healthInfo(process.env));
     return;
   }
-
-  const body = req.body;
-  if (!body) {
-    res.status(400).json({
-      jsonrpc: '2.0',
-      error: { code: -32600, message: 'Invalid Request' },
-      id: null,
-    });
-    return;
-  }
-
-  // Support single request object or batch array
-  if (Array.isArray(body)) {
-    if (body.length === 0) {
-      res.status(400).json({
-        jsonrpc: '2.0',
-        error: { code: -32600, message: 'Invalid Request: empty batch' },
-        id: null,
-      });
-      return;
-    }
-
-    for (const item of body) {
-      if (!item || typeof item !== 'object' || !ALLOWED_METHODS.has(item.method)) {
-        res.status(403).json({
-          jsonrpc: '2.0',
-          error: { code: -32601, message: `Method not allowed: ${item?.method || 'unknown'}` },
-          id: item?.id ?? null,
-        });
-        return;
-      }
-    }
-  } else if (typeof body === 'object') {
-    if (!ALLOWED_METHODS.has(body.method)) {
-      res.status(403).json({
-        jsonrpc: '2.0',
-        error: { code: -32601, message: `Method not allowed: ${body.method || 'unknown'}` },
-        id: body.id ?? null,
-      });
-      return;
-    }
-  } else {
-    res.status(400).json({
-      jsonrpc: '2.0',
-      error: { code: -32600, message: 'Invalid Request' },
-      id: null,
-    });
-    return;
-  }
-
-  const tritonUrl = process.env.TRITON_RPC_URL;
-  if (!tritonUrl) {
-    res.status(503).send('RPC not configured');
-    return;
-  }
-
-  try {
-    const upstreamRes = await fetch(tritonUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    const data = await upstreamRes.text();
-    res.status(upstreamRes.status).set('Content-Type', 'application/json').send(data);
-  } catch {
-    res.status(502).json({
-      jsonrpc: '2.0',
-      error: { code: -32603, message: 'Internal RPC forwarding error' },
-      id: Array.isArray(body) ? null : body?.id ?? null,
-    });
-  }
+  const clientIp = clientIpFrom(req.headers['x-forwarded-for'] as string | undefined, req.ip || req.socket.remoteAddress);
+  const body = typeof req.body === 'string' ? req.body : null;
+  const result = await handleJupRequest(req.method, search, body, clientIp, getJupApiKey(process.env), getJupBase(process.env));
+  res.status(result.status).set(result.headers).send(result.body);
 });
 
 // Vite app serving
@@ -160,7 +51,8 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (_req, res) => {
+    // SPA fallback. Express 5 no longer accepts '*' as a path, so use a catch-all middleware.
+    app.use((_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }

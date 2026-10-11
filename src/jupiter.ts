@@ -1,8 +1,14 @@
 import { Token, TokenWithPrice, COIN_METADATA } from './types';
 
 // Constants
-const JUP_API_BASE = 'https://api.jup.ag';
-const TOKENS_API_BASE = 'https://api.jup.ag';
+// All Jupiter calls go through our own server route, which adds the private API key
+// (JUP_API_KEY, server-side) and caches shared data like prices. See lib/jupProxy.ts.
+const JUP_PROXY = '/api/jup';
+
+function jupUrl(endpoint: string, params: Record<string, string> = {}): string {
+  const qs = new URLSearchParams({ p: endpoint, ...params });
+  return `${JUP_PROXY}?${qs.toString()}`;
+}
 const DEXSCREENER_API_BASE = 'https://api.dexscreener.com/latest/dex';
 
 // In-memory cache for verified tokens to avoid spamming the API
@@ -17,14 +23,8 @@ export async function fetchVerifiedTokens(): Promise<Token[]> {
     return cachedTokens;
   }
 
-  const headers: Record<string, string> = {};
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
-
   try {
-    const res = await fetch(`${TOKENS_API_BASE}/tokens/v2/tag?query=verified`, { headers });
+    const res = await fetch(jupUrl('tokens/v2/tag', { query: 'verified' }));
     if (!res.ok) {
       throw new Error(`HTTP status ${res.status}`);
     }
@@ -83,14 +83,9 @@ export async function verifyJupiterToken(mint: string): Promise<Token | null> {
  */
 export async function searchJupiterTokens(query: string): Promise<(Token & { isVerified: boolean; id?: string })[]> {
   if (!query || !query.trim()) return [];
-  const headers: Record<string, string> = {};
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
 
   try {
-    const res = await fetch(`${TOKENS_API_BASE}/tokens/v2/search?query=${encodeURIComponent(query.trim())}`, { headers });
+    const res = await fetch(jupUrl('tokens/v2/search', { query: query.trim() }));
     if (!res.ok) {
       return [];
     }
@@ -180,91 +175,111 @@ export async function fetchTokenLiquidity(mint: string): Promise<number> {
 }
 
 /**
+ * fetch() with one retry on network errors, HTTP 429 and 5xx responses.
+ */
+async function fetchWithRetry(url: string, init?: RequestInit, retryDelayMs = 1500): Promise<Response> {
+  const isRetryable = (status: number) => status === 429 || status >= 500;
+  try {
+    const res = await fetch(url, init);
+    if (!isRetryable(res.status)) return res;
+  } catch {
+    // network error: fall through to the retry
+  }
+  await new Promise((r) => setTimeout(r, retryDelayMs));
+  return fetch(url, init);
+}
+
+function toNumber(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? parseFloat(value) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Fetches real-time USD prices and 24h price changes for tokens.
- * Uses Jupiter Price API v3 for exact pricing, and DexScreener as a secondary/fallback source.
+ * Uses Jupiter Price API v3 as the primary source and DexScreener as fallback.
+ *
+ * IMPORTANT: a mint is only included in the result when a real price (> 0) was found.
+ * Missing mints mean "unknown", never "$0". Callers merge results over the previous
+ * prices, so a failed refresh keeps the last good price instead of zeroing it.
  */
 export async function fetchPricesAndInfo(mints: string[]): Promise<Record<string, { price: number; change24h: number }>> {
-  const result: Record<string, { price: number; change24h: number }> = {};
-  if (mints.length === 0) return result;
+  const found: Record<string, { price: number | null; change24h: number | null }> = {};
+  if (mints.length === 0) return {};
 
-  // Initialize with fallback/default zero values
   for (const mint of mints) {
-    result[mint] = { price: 0, change24h: 0 };
+    found[mint] = { price: null, change24h: null };
   }
 
-  // Chunk mints into batches of at most 30
+  // DexScreener accepts at most 30 addresses per request. Sorting keeps batches (and so
+  // request URLs) identical across users, so the server-side price cache can be shared.
   const BATCH_SIZE = 30;
+  const sortedMints = [...new Set(mints)].sort();
   const batches: string[][] = [];
-  for (let i = 0; i < mints.length; i += BATCH_SIZE) {
-    batches.push(mints.slice(i, i + BATCH_SIZE));
-  }
-
-  const headers: Record<string, string> = {};
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
+  for (let i = 0; i < sortedMints.length; i += BATCH_SIZE) {
+    batches.push(sortedMints.slice(i, i + BATCH_SIZE));
   }
 
   for (const batch of batches) {
-    // 1. Fetch live prices from Jupiter Price API v3 for this batch
+    // 1. Jupiter Price API v3
     try {
-      const res = await fetch(`${JUP_API_BASE}/price/v3?ids=${batch.join(',')}`, { headers });
+      const res = await fetchWithRetry(jupUrl('price/v3', { ids: batch.join(',') }));
       if (res.ok) {
         const data = await res.json();
-        if (data) {
-          for (const mint of batch) {
-            const item = data[mint];
-            if (item) {
-              if (typeof item.usdPrice === 'number') {
-                result[mint].price = item.usdPrice;
-              } else if (typeof item.usdPrice === 'string') {
-                result[mint].price = parseFloat(item.usdPrice);
-              }
-
-              if (typeof item.priceChange24h === 'number') {
-                result[mint].change24h = item.priceChange24h;
-              } else if (typeof item.priceChange24h === 'string') {
-                result[mint].change24h = parseFloat(item.priceChange24h);
-              }
-            }
-          }
+        for (const mint of batch) {
+          const item = data?.[mint];
+          if (!item) continue;
+          const price = toNumber(item.usdPrice);
+          if (price !== null && price > 0) found[mint].price = price;
+          const change = toNumber(item.priceChange24h);
+          if (change !== null) found[mint].change24h = change;
         }
+      } else {
+        console.warn(`Jupiter Price API returned HTTP ${res.status}`);
       }
     } catch (err) {
       console.error('Error fetching prices from Jupiter Price API v3:', err);
     }
 
-    // 2. Fetch 24h percentage changes and fallback prices from DexScreener for this batch
+    // 2. DexScreener: fallback prices and 24h changes (most liquid Solana pair per mint)
     try {
-      const res = await fetch(`${DEXSCREENER_API_BASE}/tokens/${batch.join(',')}`);
+      const res = await fetchWithRetry(`${DEXSCREENER_API_BASE}/tokens/${batch.join(',')}`);
       if (res.ok) {
         const data = await res.json();
-        if (data && data.pairs) {
+        if (data && Array.isArray(data.pairs)) {
           const solanaPairs = data.pairs
             .filter((pair: any) => pair.chainId === 'solana')
             .sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
 
           const populatedMints = new Set<string>();
-
           for (const pair of solanaPairs) {
             const mintAddress = pair.baseToken?.address;
-            if (mintAddress && batch.includes(mintAddress) && !populatedMints.has(mintAddress)) {
-              if (result[mintAddress].change24h === 0 && pair.priceChange && typeof pair.priceChange.h24 === 'number') {
-                result[mintAddress].change24h = pair.priceChange.h24;
-              }
-              if (result[mintAddress].price === 0 && pair.priceUsd) {
-                result[mintAddress].price = parseFloat(pair.priceUsd);
-              }
-              populatedMints.add(mintAddress);
+            if (!mintAddress || !found[mintAddress] || !batch.includes(mintAddress) || populatedMints.has(mintAddress)) continue;
+            populatedMints.add(mintAddress);
+
+            if (found[mintAddress].change24h === null) {
+              const change = toNumber(pair.priceChange?.h24);
+              if (change !== null) found[mintAddress].change24h = change;
+            }
+            if (found[mintAddress].price === null) {
+              const price = toNumber(pair.priceUsd);
+              if (price !== null && price > 0) found[mintAddress].price = price;
             }
           }
         }
+      } else {
+        console.warn(`DexScreener returned HTTP ${res.status}`);
       }
     } catch (err) {
-      console.error('Error fetching 24h changes from DexScreener:', err);
+      console.error('Error fetching prices from DexScreener:', err);
     }
   }
 
+  const result: Record<string, { price: number; change24h: number }> = {};
+  for (const [mint, info] of Object.entries(found)) {
+    if (info.price !== null && info.price > 0) {
+      result[mint] = { price: info.price, change24h: info.change24h ?? 0 };
+    }
+  }
   return result;
 }
 
@@ -285,15 +300,9 @@ export async function fetchQuote(params: {
   }
 
   // URL construction for swap/v1/quote
-  let url = `${JUP_API_BASE}/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`;
+  const url = jupUrl('swap/v1/quote', { inputMint, outputMint, amount, slippageBps: String(slippageBps) });
 
-  const headers: Record<string, string> = {};
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
-
-  const res = await fetch(url, { headers });
+  const res = await fetch(url);
   if (!res.ok) {
     const errorText = await res.text();
     throw new Error(`Jupiter Quote API failed: ${errorText}`);
@@ -313,7 +322,7 @@ export async function buildSwapTransaction(params: {
 }): Promise<any> {
   const { quoteResponse, userPublicKey, wrapAndUnwrapSol = true } = params;
 
-  const url = `${JUP_API_BASE}/swap/v1/swap`;
+  const url = jupUrl('swap/v1/swap');
 
   const body: any = {
     quoteResponse,
@@ -326,10 +335,6 @@ export async function buildSwapTransaction(params: {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
-  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
 
   const res = await fetch(url, {
     method: 'POST',

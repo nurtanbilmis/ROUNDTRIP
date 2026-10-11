@@ -64,6 +64,7 @@ function Dashboard() {
     connect,
     disconnect,
     refreshBalances,
+    balancesError,
     signAndExecuteSwap,
     closeEmptyAccount,
     convertToSol,
@@ -306,6 +307,7 @@ function Dashboard() {
   const attemptedMintsRef = useRef<Set<string>>(new Set());
   const [prices, setPrices] = useState<Record<string, { price: number; change24h: number }>>({});
   const [loadingPrices, setLoadingPrices] = useState(false);
+  const [pricesLoadedOnce, setPricesLoadedOnce] = useState(false);
 
   // Nav routing states
   const [activeTab, setActiveTab] = useState<'wallet' | 'prices' | 'leaderboard'>('wallet');
@@ -504,13 +506,26 @@ function Dashboard() {
       console.error('Failed to sync market rates:', e);
     } finally {
       setLoadingPrices(false);
+      setPricesLoadedOnce(true);
     }
   }, [balanceMintsJoined, groupMintsJoined]);
+
+  // Basket coins without a real price. A missing price is "unknown", never "$0",
+  // so these block drift badges and rebalancing until a price arrives.
+  const missingPriceMints = useMemo(() => {
+    if (!pricesLoadedOnce) return [] as string[];
+    const groupMints = groupMintsJoined ? groupMintsJoined.split(',') : [];
+    return Array.from(new Set(groupMints)).filter((m) => !((prices[m]?.price ?? 0) > 0));
+  }, [pricesLoadedOnce, groupMintsJoined, prices]);
+
+  const groupHasMissingPrice = (g: LinkGroup) => g.memberMints.some((m) => missingPriceMints.includes(m));
+
+  // Wallet balances are loaded by WalletProvider on connect; here we only (re)load prices.
+  // Calling refreshBalances() here too caused duplicate, overlapping balance requests.
 
   // Handle wallet load
   useEffect(() => {
     if (connected) {
-      refreshBalances();
       refreshPrices();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1249,6 +1264,23 @@ function Dashboard() {
           </div>
         </div>
 
+        {connected && (balancesError || missingPriceMints.length > 0) && (
+          <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 px-4 py-3 rounded-xl text-xs">
+            <span aria-hidden="true">⚠</span>
+            <div>
+              <span className="font-bold">Some prices or balances could not be loaded, so values may be incomplete. Retrying…</span>
+              {missingPriceMints.length > 0 && (
+                <span className="block font-mono font-semibold opacity-80 mt-0.5">
+                  Missing prices: {missingPriceMints.map((m) => tokenMetadata[m]?.symbol || `${m.substring(0, 4)}…`).join(', ')}
+                </span>
+              )}
+              {balancesError && (
+                <span className="block font-semibold opacity-80 mt-0.5">Wallet balances: last load failed, showing previous values.</span>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Action routing tab buttons */}
         <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900 border border-slate-850 p-4 rounded-xl">
           <div className="flex items-center gap-2">
@@ -1658,7 +1690,14 @@ function Dashboard() {
                               </div>
                             </div>
 
-                            {gStats.isRebalanceAdvisable ? (
+                            {groupHasMissingPrice(g) ? (
+                              <span
+                                className="text-[9px] bg-slate-800 text-slate-400 border border-slate-700 px-2 py-1 rounded-lg font-bold flex items-center gap-1 flex-shrink-0"
+                                title="Waiting for prices before checking drift"
+                              >
+                                Pricing…
+                              </span>
+                            ) : gStats.isRebalanceAdvisable ? (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
