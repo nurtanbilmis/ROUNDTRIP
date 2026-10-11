@@ -1,6 +1,0 @@
-{
-  "name": "Round Trip",
-  "description": "A non-custodial, equal-weight portfolio rebalancing and volatility harvesting app for Solana SPL tokens using the Jupiter Swap API.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
