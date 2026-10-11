@@ -128,3 +128,35 @@ export async function handleJupRequest(
     return jsonError(502, 'Jupiter request failed');
   }
 }
+
+/**
+ * Live self-test for GET /api/jup?check=1: fetches the SOL price through Jupiter with the
+ * configured key and reports the outcome. Never shows the key.
+ */
+export async function jupiterCheck(env: Record<string, string | undefined>): Promise<string> {
+  const key = getJupApiKey(env);
+  const SOL = 'So11111111111111111111111111111111111111112';
+  const started = Date.now();
+  try {
+    const res = await fetch(`${getJupBase(env)}/price/v3?ids=${SOL}`, { headers: key ? { 'x-api-key': key } : {} });
+    const text = await res.text();
+    let price: unknown = null;
+    try {
+      price = JSON.parse(text)?.[SOL]?.usdPrice ?? null;
+    } catch {
+      // not JSON
+    }
+    const safe = key ? text.split(key).join('[key]') : text;
+    return JSON.stringify({
+      check: 'jupiter',
+      ok: res.ok && price != null,
+      keyConfigured: Boolean(key),
+      upstreamStatus: res.status,
+      solPriceUsd: price,
+      ms: Date.now() - started,
+      upstreamSaid: price != null ? undefined : safe.slice(0, 300),
+    });
+  } catch (err: any) {
+    return JSON.stringify({ check: 'jupiter', ok: false, keyConfigured: Boolean(key), problem: 'Could not reach Jupiter', error: String(err?.message || err) });
+  }
+}

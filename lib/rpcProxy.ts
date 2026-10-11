@@ -109,3 +109,67 @@ export function healthInfo(env: Record<string, string | undefined>): string {
     note: 'Shows only whether each key is set; values are never shown.',
   });
 }
+
+/** Removes the secret upstream URL (and its path) from any text before it is shown. */
+function redact(text: string, secret: string | undefined): string {
+  if (!secret) return text;
+  let out = text.split(secret).join('[upstream]');
+  try {
+    const u = new URL(secret);
+    for (const part of [u.host, ...u.pathname.split('/'), ...u.searchParams.values()]) {
+      if (part && part.length >= 6) out = out.split(part).join('[redacted]');
+    }
+  } catch {
+    // not a URL: nothing more to strip
+  }
+  return out;
+}
+
+/**
+ * Live self-test for GET /api/rpc?check=1: sends one real getSlot request upstream and
+ * reports what came back, so a deploy can be verified from a browser. Never shows the URL.
+ */
+export async function upstreamCheck(env: Record<string, string | undefined>): Promise<string> {
+  const upstream = getUpstreamUrl(env);
+  if (!upstream) return JSON.stringify({ check: 'rpc', ok: false, problem: 'RPC_UPSTREAM_URL is not set' });
+
+  let parsedOk = true;
+  try {
+    const u = new URL(upstream.trim());
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') parsedOk = false;
+  } catch {
+    parsedOk = false;
+  }
+  if (!parsedOk) {
+    return JSON.stringify({ check: 'rpc', ok: false, problem: 'RPC_UPSTREAM_URL is not a valid http(s) URL. Check for spaces, quotes or a missing https://' });
+  }
+  if (upstream !== upstream.trim()) {
+    return JSON.stringify({ check: 'rpc', ok: false, problem: 'RPC_UPSTREAM_URL has leading or trailing spaces' });
+  }
+
+  const started = Date.now();
+  try {
+    const res = await fetch(upstream, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSlot' }),
+    });
+    const text = await res.text();
+    let slot: unknown = null;
+    try {
+      slot = JSON.parse(text)?.result ?? null;
+    } catch {
+      // not JSON
+    }
+    return JSON.stringify({
+      check: 'rpc',
+      ok: res.ok && typeof slot === 'number',
+      upstreamStatus: res.status,
+      slot,
+      ms: Date.now() - started,
+      upstreamSaid: typeof slot === 'number' ? undefined : redact(text, upstream).slice(0, 300),
+    });
+  } catch (err: any) {
+    return JSON.stringify({ check: 'rpc', ok: false, problem: 'Could not reach the RPC', error: redact(String(err?.cause?.message || err?.message || err), upstream) });
+  }
+}

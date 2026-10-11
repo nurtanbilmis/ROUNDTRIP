@@ -3,7 +3,7 @@
  * Same behaviour as the Express route in server.ts (see lib/jupProxy.ts).
  * Set JUP_API_KEY (Secret) in the Vercel project's Environment Variables.
  */
-import { handleJupRequest, getJupApiKey, getJupBase } from '../lib/jupProxy.js';
+import { handleJupRequest, getJupApiKey, getJupBase, jupiterCheck } from '../lib/jupProxy.js';
 import { clientIpFrom, healthInfo } from '../lib/rpcProxy.js';
 
 const MAX_BODY_BYTES = 200_000;
@@ -13,7 +13,8 @@ async function handle(request: Request): Promise<Response> {
 
   // Health check: /api/jup with no endpoint
   if (request.method === 'GET' && !url.searchParams.get('p')) {
-    return new Response(healthInfo(process.env), {
+    const body = url.searchParams.get('check') ? await jupiterCheck(process.env) : healthInfo(process.env);
+    return new Response(body, {
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     });
   }
