@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   ArrowUpDown, 
   RefreshCw, 
@@ -22,12 +22,18 @@ import {
   Edit2,
   Settings
 } from 'lucide-react';
-import { Token, TokenBalance, RebalanceSwap, LinkGroup, getGroupColorClasses, formatPrice, COIN_LINE_COLORS } from '../types';
+import { Token, TokenBalance, RebalanceSwap, LinkGroup, HarvestEvent, getGroupColorClasses, formatPrice, COIN_LINE_COLORS } from '../types';
 import { useSolanaWallet } from './WalletProvider';
-import { fetchQuote, fetchVerifiedTokens } from '../jupiter';
+import { fetchQuote, fetchVerifiedTokens, fetchTokenMetadata, searchJupiterTokens } from '../jupiter';
+import { PublicKey } from '@solana/web3.js';
+import { createConnection } from '../rpc';
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getMint, getAccount } from '@solana/spl-token';
+import BasketOverview from './BasketOverview';
 import ScoreboardView from './ScoreboardView';
 import ConfirmModal from './ConfirmModal';
 import WithdrawModal from './WithdrawModal';
+import TokenLogo from './TokenLogo';
+import TokenLink from './TokenLink';
 import { 
   ResponsiveContainer, 
   LineChart, 
@@ -53,17 +59,13 @@ interface AllocationViewProps {
   onUpdateGroup: (updated: LinkGroup) => void;
   onDeleteGroup: (id: string) => void;
   onRefreshPrices: () => Promise<void>;
-  onSaveSnapshot: (
-    groupId: string,
-    groupName: string,
-    snapshotBalances: TokenBalance[],
-    totalUsd: number,
-    eventType?: 'convert' | 'rebalance' | 'cashout' | 'membership' | 'manual'
-  ) => void;
-  groupSnapshots: any[];
+  harvestLedger: HarvestEvent[];
+  onRecordHarvest: (events: HarvestEvent[]) => void;
   loadingPrices?: boolean;
   onMoveToken?: (mint: string, fromGroup: LinkGroup, toGroup: LinkGroup) => void;
   onOpenAddBasket?: () => void;
+  isVerifiedCoin?: (mint: string) => boolean;
+  onAddTokenMetadata?: (token: Token) => void;
 }
 
 export default function AllocationView({
@@ -76,13 +78,15 @@ export default function AllocationView({
   onUpdateGroup,
   onDeleteGroup,
   onRefreshPrices,
-  onSaveSnapshot,
-  groupSnapshots,
+  harvestLedger,
+  onRecordHarvest,
   loadingPrices = false,
   onMoveToken,
   onOpenAddBasket,
+  isVerifiedCoin,
+  onAddTokenMetadata,
 }: AllocationViewProps) {
-  const { signAndExecuteSwap, publicKey, type, refreshBalances, slippageBps } = useSolanaWallet();
+  const { signAndExecuteSwap, getConfirmedSwapDeltas, publicKey, type, refreshBalances, slippageBps, rpcUrl } = useSolanaWallet();
 
   const [loadingQuotes, setLoadingQuotes] = useState(false);
   const [rebalancing, setRebalancing] = useState(false);
@@ -185,9 +189,300 @@ export default function AllocationView({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showUnlinkAllConfirm, setShowUnlinkAllConfirm] = useState(false);
 
+  // States for dynamic on-chain custom mint validation & unverified warnings
+  const [validatingMint, setValidatingMint] = useState(false);
+  const [mintValidationResult, setMintValidationResult] = useState<{
+    status: 'idle' | 'checking' | 'valid' | 'invalid' | 'pool_suggestion' | 'token_account';
+    mint?: string;
+    error?: string;
+    token?: Token;
+    isToken2022?: boolean;
+    isVerified?: boolean;
+    suggestedTokens?: (Token & { isVerified: boolean })[];
+    tokenAccountMint?: string;
+  }>({ status: 'idle' });
+  const [pendingUnverifiedWarningToken, setPendingUnverifiedWarningToken] = useState<Token | null>(null);
+
+  // General Jupiter search results for the picker list
+  const [jupiterSearchResults, setJupiterSearchResults] = useState<(Token & { isVerified: boolean })[]>([]);
+  const [searchingJupiter, setSearchingJupiter] = useState(false);
+
+  // Search Jupiter tokens whenever search query changes
+  useEffect(() => {
+    const q = addCoinSearchQuery.trim();
+    if (!showInlineAddPicker || !q) {
+      setJupiterSearchResults([]);
+      setSearchingJupiter(false);
+      return;
+    }
+
+    let active = true;
+    const timer = setTimeout(async () => {
+      setSearchingJupiter(true);
+      try {
+        const results = await searchJupiterTokens(q);
+        if (active) {
+          setJupiterSearchResults(results);
+        }
+      } catch (err) {
+        console.warn('Error fetching Jupiter search results:', err);
+      } finally {
+        if (active) {
+          setSearchingJupiter(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [addCoinSearchQuery, showInlineAddPicker]);
+
+  // Validate on-chain mint / address when addCoinSearchQuery looks like an address
+  useEffect(() => {
+    const trimmed = addCoinSearchQuery.trim();
+    if (!showInlineAddPicker || !trimmed) {
+      setMintValidationResult({ status: 'idle' });
+      setValidatingMint(false);
+      return;
+    }
+
+    // Only attempt address validation if input matches Base58 character set and length (30-48 chars)
+    const isBase58Regex = /^[1-9A-HJ-NP-Za-km-z]{30,48}$/;
+    if (!isBase58Regex.test(trimmed)) {
+      if (trimmed.length >= 32) {
+        setMintValidationResult({
+          status: 'invalid',
+          error: 'Invalid Solana address: Not a valid Base58 string (contains invalid characters like 0, O, I, or l).'
+        });
+      } else {
+        setMintValidationResult({ status: 'idle' });
+      }
+      return;
+    }
+
+    let active = true;
+    setValidatingMint(true);
+    setMintValidationResult({ status: 'checking' });
+
+    const timer = setTimeout(async () => {
+      let pubkey: PublicKey;
+      try {
+        pubkey = new PublicKey(trimmed);
+      } catch (err: any) {
+        if (active) {
+          setMintValidationResult({
+            status: 'invalid',
+            error: 'Invalid Solana address: Base58 public key decode failed.'
+          });
+          setValidatingMint(false);
+        }
+        return;
+      }
+
+      const inputAddress = pubkey.toBase58();
+
+      if (group.memberMints.includes(inputAddress)) {
+        if (active) {
+          setMintValidationResult({
+            status: 'invalid',
+            mint: inputAddress,
+            error: 'This token is already a member of this basket.'
+          });
+          setValidatingMint(false);
+        }
+        return;
+      }
+
+      // Step 1: Use Jupiter's token search
+      let jupResults: (Token & { isVerified: boolean; id?: string })[] = [];
+      try {
+        jupResults = await searchJupiterTokens(inputAddress);
+      } catch (err) {
+        console.warn('Jupiter search failed during address validation:', err);
+      }
+
+      const exactMatch = jupResults.find(
+        (t) => (t as any).id === inputAddress || t.address === inputAddress
+      );
+
+      if (exactMatch) {
+        // Step 1a: If a result has item.id === input exactly, that IS the mint: accept it
+        // Use on-chain data only to read decimals, not as a blocker.
+        let decimals = exactMatch.decimals;
+        let isToken2022 = false;
+
+        try {
+          const connection = createConnection(rpcUrl);
+          const info = await connection.getAccountInfo(pubkey);
+          if (info) {
+            console.debug({ address: inputAddress, owner: info.owner.toBase58(), dataLength: info.data.length });
+            if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+              isToken2022 = true;
+            }
+            try {
+              const mintInfo = await getMint(connection, pubkey, 'confirmed', info.owner);
+              if (typeof mintInfo.decimals === 'number') {
+                decimals = mintInfo.decimals;
+              }
+            } catch {
+              // On-chain read only for decimals, not as a blocker
+            }
+          }
+        } catch {
+          // RPC failure should not block Jupiter result
+        }
+
+        const isVerified = Boolean(
+          exactMatch.isVerified ||
+          (isVerifiedCoin && isVerifiedCoin(inputAddress)) ||
+          verifiedTokens.some((vt) => vt.address === inputAddress) ||
+          tokenMetadata[inputAddress]?.tags?.includes('verified')
+        );
+
+        const tokenObj: Token = {
+          address: inputAddress,
+          symbol: exactMatch.symbol || `${inputAddress.slice(0, 4)}...${inputAddress.slice(-4)}`,
+          name: exactMatch.name || `Token (${inputAddress.slice(0, 4)}...${inputAddress.slice(-4)})`,
+          decimals,
+          logoURI: exactMatch.logoURI,
+          tags: isVerified ? ['verified'] : ['unverified'],
+        };
+
+        if (active) {
+          setMintValidationResult({
+            status: 'valid',
+            mint: inputAddress,
+            token: tokenObj,
+            isToken2022,
+            isVerified,
+          });
+          setValidatingMint(false);
+        }
+        return;
+      }
+
+      if (jupResults.length > 0 && !exactMatch) {
+        // Step 1b: If results exist but none has id === input, user probably pasted a pool/pair address.
+        // Do NOT add anything automatically. Show pool/pair message and suggestions.
+        if (active) {
+          setMintValidationResult({
+            status: 'pool_suggestion',
+            mint: inputAddress,
+            suggestedTokens: jupResults,
+          });
+          setValidatingMint(false);
+        }
+        return;
+      }
+
+      // Step 2: Fix on-chain mint check (fallback only, when Jupiter returns nothing)
+      try {
+        const connection = createConnection(rpcUrl);
+        const info = await connection.getAccountInfo(pubkey);
+
+        if (!info) {
+          if (active) {
+            setMintValidationResult({
+              status: 'invalid',
+              mint: inputAddress,
+              error: 'Address was not found on Solana mainnet. Make sure the token exists on-chain.'
+            });
+            setValidatingMint(false);
+          }
+          return;
+        }
+
+        console.debug({ address: inputAddress, owner: info.owner.toBase58(), dataLength: info.data.length });
+
+        const isSpl = info.owner.equals(TOKEN_PROGRAM_ID);
+        const is2022 = info.owner.equals(TOKEN_2022_PROGRAM_ID);
+
+        if (isSpl || is2022) {
+          try {
+            const mintInfo = await getMint(connection, pubkey, 'confirmed', info.owner);
+            const decimals = mintInfo.decimals;
+
+            let resolvedMeta = tokenMetadata[inputAddress];
+            const tokenObj: Token = {
+              address: inputAddress,
+              symbol: resolvedMeta?.symbol || `${inputAddress.slice(0, 4)}...${inputAddress.slice(-4)}`,
+              name: resolvedMeta?.name || `Token (${inputAddress.slice(0, 4)}...${inputAddress.slice(-4)})`,
+              decimals,
+              logoURI: resolvedMeta?.logoURI,
+              tags: ['unverified'],
+            };
+
+            if (active) {
+              setMintValidationResult({
+                status: 'valid',
+                mint: inputAddress,
+                token: tokenObj,
+                isToken2022: is2022,
+                isVerified: false,
+              });
+              setValidatingMint(false);
+            }
+            return;
+          } catch {
+            // getMint failed. Check if it's a token account:
+            try {
+              const accInfo = await getAccount(connection, pubkey, 'confirmed', info.owner);
+              const realMint = accInfo.mint.toBase58();
+              if (active) {
+                setMintValidationResult({
+                  status: 'token_account',
+                  mint: inputAddress,
+                  tokenAccountMint: realMint,
+                });
+                setValidatingMint(false);
+              }
+              return;
+            } catch {
+              if (active) {
+                setMintValidationResult({
+                  status: 'invalid',
+                  mint: inputAddress,
+                  error: 'Account is owned by the token program, but could not be parsed as a valid token mint.'
+                });
+                setValidatingMint(false);
+              }
+              return;
+            }
+          }
+        } else {
+          // If owner is any other program:
+          if (active) {
+            setMintValidationResult({
+              status: 'invalid',
+              mint: inputAddress,
+              error: "This looks like a liquidity pool or pair address, not a token. Paste the token's contract address instead (on pump.fun tokens it usually ends in 'pump')."
+            });
+            setValidatingMint(false);
+          }
+          return;
+        }
+      } catch (err: any) {
+        if (active) {
+          setMintValidationResult({
+            status: 'invalid',
+            mint: inputAddress,
+            error: `Network error verifying mint on-chain: ${err?.message || 'RPC request timed out'}`
+          });
+          setValidatingMint(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [addCoinSearchQuery, showInlineAddPicker, group.memberMints, rpcUrl, isVerifiedCoin, verifiedTokens, tokenMetadata]);
+
   // Cash out / Proportional Withdraw trigger state
   const [isCashingOut, setIsCashingOut] = useState(false);
-  const [showSnapshotSuccess, setShowSnapshotSuccess] = useState(false);
 
   const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
@@ -244,13 +539,51 @@ export default function AllocationView({
     }
   };
 
-  const handleAddCoinDirect = (mint: string) => {
+  const handleSelectTokenToAdd = async (token: Token) => {
+    const isVerified = Boolean(
+      (isVerifiedCoin && isVerifiedCoin(token.address)) ||
+      token.tags?.includes('verified') ||
+      verifiedTokens.some((vt) => vt.address === token.address) ||
+      tokenMetadata[token.address]?.tags?.includes('verified')
+    );
+
+    if (!isVerified) {
+      setPendingUnverifiedWarningToken(token);
+      try {
+        const { fetchTokenLiquidity } = await import('../jupiter');
+        const liq = await fetchTokenLiquidity(token.address);
+        setPendingUnverifiedWarningToken((prev) => (prev && prev.address === token.address ? { ...prev, liquidity: liq } as any : prev));
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    handleAddCoinPreCheck(token);
+  };
+
+  const handleConfirmAddUnverifiedToken = (token: Token) => {
+    if (onAddTokenMetadata) {
+      onAddTokenMetadata(token);
+    }
+    handleAddCoinDirect(token.address, token);
+    setPendingUnverifiedWarningToken(null);
+    setAddCoinSearchQuery('');
+    setMintValidationResult({ status: 'idle' });
+  };
+
+  const handleAddCoinDirect = (mint: string, tokenObj?: Token) => {
     if (group.memberMints.includes(mint)) return;
+    if (tokenObj && onAddTokenMetadata) {
+      onAddTokenMetadata(tokenObj);
+    }
     onUpdateGroup({
       ...group,
       memberMints: [...group.memberMints, mint],
     });
     setShowInlineAddPicker(false);
+    setAddCoinSearchQuery('');
+    setMintValidationResult({ status: 'idle' });
   };
 
   // 1. Map other token details and calculate balances scoped to this group
@@ -585,6 +918,8 @@ export default function AllocationView({
       return;
     }
 
+    const executedEvents: HarvestEvent[] = [];
+
     for (let seqIdx = 0; seqIdx < selectedIndices.length; seqIdx++) {
       const i = selectedIndices[seqIdx];
       setRebalanceStep(i + 1);
@@ -596,6 +931,9 @@ export default function AllocationView({
         localStatus[i] = { success: false, error: errStr };
         setRebalanceStatus({ ...localStatus });
         setRebalancing(false);
+        if (executedEvents.length > 0) {
+          onRecordHarvest(executedEvents);
+        }
         return; // halt sequence
       }
 
@@ -611,14 +949,67 @@ export default function AllocationView({
 
         localStatus[i] = { success: true, txId };
         setRebalanceStatus({ ...localStatus });
+
+        const quoteBoughtUnits = quoteInfo?.quote?.outAmount
+          ? parseInt(quoteInfo.quote.outAmount, 10) / Math.pow(10, swap.outputDecimals)
+          : swap.amountHuman;
+        const quoteSoldUnits = swap.amountHuman;
+        let boughtUnits = quoteBoughtUnits;
+        let soldUnits = quoteSoldUnits;
+        let harvestSource: 'onchain' | 'quote' = 'quote';
+        try {
+          const confirmed = await getConfirmedSwapDeltas({
+            txId: txId || '',
+            inputMint: swap.inputMint,
+            outputMint: swap.outputMint,
+            inputDecimals: swap.inputDecimals,
+            outputDecimals: swap.outputDecimals,
+          });
+          if (confirmed.ok && confirmed.boughtUnits > 0 && confirmed.soldUnits > 0) {
+            boughtUnits = confirmed.boughtUnits;
+            soldUnits = confirmed.soldUnits;
+            harvestSource = 'onchain';
+          }
+        } catch {
+          // keep quote fallback
+        }
+
+        const soldPriceUsd = prices[swap.inputMint]?.price || 0;
+        const boughtPriceUsd = prices[swap.outputMint]?.price || 0;
+        const volumeUsd = (soldUnits * soldPriceUsd) || swap.usdValue || 0;
+
+        executedEvents.push({
+          id: `harvest_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+          timestamp: Date.now(),
+          txId: txId || '',
+          groupId: group.id,
+          groupName: group.name,
+          soldMint: swap.inputMint,
+          soldSymbol: swap.inputSymbol,
+          soldUnits,
+          soldPriceUsd,
+          boughtMint: swap.outputMint,
+          boughtSymbol: swap.outputSymbol,
+          boughtUnits,
+          boughtPriceUsd,
+          volumeUsd,
+          source: harvestSource,
+        });
       } catch (err: any) {
         console.error(`Rebalance step ${i + 1} failed:`, err);
         const errStr = err?.message || 'Transaction rejected';
         localStatus[i] = { success: false, error: errStr };
         setRebalanceStatus({ ...localStatus });
         setRebalancing(false);
+        if (executedEvents.length > 0) {
+          onRecordHarvest(executedEvents);
+        }
         return; // halt sequence
       }
+    }
+
+    if (executedEvents.length > 0) {
+      onRecordHarvest(executedEvents);
     }
 
     setRebalancing(false);
@@ -631,11 +1022,7 @@ export default function AllocationView({
 
     if (finalAllSucceeded) {
       await onRefreshPrices();
-      const freshBalances = await refreshBalances();
-      const freshGroupBalances = getGroupBalances(freshBalances);
-      const freshTotalUsdValue = freshGroupBalances.reduce((sum, item) => sum + item.usdValue, 0);
-
-      onSaveSnapshot(group.id, group.name, freshGroupBalances, freshTotalUsdValue, 'rebalance');
+      await refreshBalances();
       
       // Reset statuses so we can re-evaluate remaining trades
       setRebalanceStatus({});
@@ -678,13 +1065,55 @@ export default function AllocationView({
       setRebalanceStatus({ ...localStatus });
       setRebalancing(false);
 
-      // Successfully finished the single trade - let's refresh prices and balances
-      await onRefreshPrices();
-      const freshBalances = await refreshBalances();
-      const freshGroupBalances = getGroupBalances(freshBalances);
-      const freshTotalUsdValue = freshGroupBalances.reduce((sum, item) => sum + item.usdValue, 0);
+      const quoteBoughtUnits = quoteInfo?.quote?.outAmount
+        ? parseInt(quoteInfo.quote.outAmount, 10) / Math.pow(10, swap.outputDecimals)
+        : swap.amountHuman;
+      const quoteSoldUnits = swap.amountHuman;
+      let boughtUnits = quoteBoughtUnits;
+      let soldUnits = quoteSoldUnits;
+      let harvestSource: 'onchain' | 'quote' = 'quote';
+      try {
+        const confirmed = await getConfirmedSwapDeltas({
+          txId: txId || '',
+          inputMint: swap.inputMint,
+          outputMint: swap.outputMint,
+          inputDecimals: swap.inputDecimals,
+          outputDecimals: swap.outputDecimals,
+        });
+        if (confirmed.ok && confirmed.boughtUnits > 0 && confirmed.soldUnits > 0) {
+          boughtUnits = confirmed.boughtUnits;
+          soldUnits = confirmed.soldUnits;
+          harvestSource = 'onchain';
+        }
+      } catch {
+        // keep quote fallback
+      }
 
-      onSaveSnapshot(group.id, group.name, freshGroupBalances, freshTotalUsdValue, 'rebalance');
+      const soldPriceUsd = prices[swap.inputMint]?.price || 0;
+      const boughtPriceUsd = prices[swap.outputMint]?.price || 0;
+      const volumeUsd = (soldUnits * soldPriceUsd) || swap.usdValue || 0;
+
+      onRecordHarvest([{
+        id: `harvest_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+        timestamp: Date.now(),
+        txId: txId || '',
+        groupId: group.id,
+        groupName: group.name,
+        soldMint: swap.inputMint,
+        soldSymbol: swap.inputSymbol,
+        soldUnits,
+        soldPriceUsd,
+        boughtMint: swap.outputMint,
+        boughtSymbol: swap.outputSymbol,
+        boughtUnits,
+        boughtPriceUsd,
+        volumeUsd,
+        source: harvestSource,
+      }]);
+
+      // Successfully finished the single trade - refresh prices and balances
+      await onRefreshPrices();
+      await refreshBalances();
       
       // Reset rebalance and selection states for remaining trades
       setRebalanceStatus({});
@@ -702,28 +1131,33 @@ export default function AllocationView({
   // Group Color styling mapping
   const groupColors = getGroupColorClasses(group.color);
 
-  // Compute creation baseline snapshot for "Value Since Creation"
-  const sortedGroupSnapshots = [...(groupSnapshots || [])]
-    .filter((s) => s && s.groupId === group.id)
-    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  // Group harvest metrics (signed net delta PnL)
+  const groupHarvestEvents = (harvestLedger || []).filter((e) => e && e.groupId === group.id);
+  const netGroupHarvestUsd = useMemo(() => {
+    const netUnits: Record<string, number> = {};
+    for (const e of groupHarvestEvents) {
+      if (e.boughtMint) {
+        netUnits[e.boughtMint] = (netUnits[e.boughtMint] || 0) + (e.boughtUnits || 0);
+      }
+      if (e.soldMint) {
+        netUnits[e.soldMint] = (netUnits[e.soldMint] || 0) - (e.soldUnits || 0);
+      }
+    }
 
-  const cleanCreationBaseline = sortedGroupSnapshots.find((s) => {
-    if (!s || !s.totalUsdValue || s.totalUsdValue <= 0) return false;
-    if (!Array.isArray(s.balances) || s.balances.length === 0) return false;
-    const hasZeroPrice = s.balances.some((b: any) => !b || b.price === undefined || b.price <= 0);
-    return !hasZeroPrice;
-  });
+    const priceMap = new Map<string, number>();
+    for (const b of groupBalances) {
+      if (b && b.mint && typeof b.price === 'number') {
+        priceMap.set(b.mint, b.price);
+      }
+    }
 
-  const creationBaselineUsd = cleanCreationBaseline?.totalUsdValue;
-  const hasCreationBaseline = creationBaselineUsd !== undefined && creationBaselineUsd > 0;
-
-  let sinceCreationPct: number | null = null;
-  let sinceCreationDeltaUsd: number | null = null;
-
-  if (hasCreationBaseline) {
-    sinceCreationDeltaUsd = totalUsdValue - creationBaselineUsd;
-    sinceCreationPct = (sinceCreationDeltaUsd / creationBaselineUsd) * 100;
-  }
+    let sumUsd = 0;
+    for (const [mint, units] of Object.entries(netUnits)) {
+      const price = priceMap.get(mint) ?? prices[mint]?.price ?? 0;
+      sumUsd += units * price;
+    }
+    return sumUsd;
+  }, [groupHarvestEvents, groupBalances, prices]);
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-300">
@@ -814,9 +1248,11 @@ export default function AllocationView({
               <AlertCircle className="w-5 h-5" />
             </div>
             <div className="space-y-1 flex-grow">
-              <h5 className="font-bold text-sm text-rose-200 uppercase tracking-wide">Extreme 24h Devaluaton Case: {coin.symbol}</h5>
+              <h5 className="font-bold text-sm text-rose-200 uppercase tracking-wide">
+                Extreme 24h Devaluaton Case: <TokenLink mint={coin.mint}><span className="text-white hover:underline">{coin.symbol}</span></TokenLink>
+              </h5>
               <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
-                Asset <strong className="text-white">{coin.symbol}</strong> is crashing hard: <strong className="text-rose-400">{(coin.change24h || 0).toFixed(1)}% drop in the last 24h</strong>. Equal-weight rebalancing will naturally build route trades to buy MORE of this crash coin using proceeds from selling other assets. Evaluate if a fundamental crash has occurred before executing.
+                Asset <TokenLink mint={coin.mint}><strong className="text-white">{coin.symbol}</strong></TokenLink> is crashing hard: <strong className="text-rose-400">{(coin.change24h || 0).toFixed(1)}% drop in the last 24h</strong>. Equal-weight rebalancing will naturally build route trades to buy MORE of this crash coin using proceeds from selling other assets. Evaluate if a fundamental crash has occurred before executing.
               </p>
             </div>
           </div>
@@ -892,20 +1328,31 @@ export default function AllocationView({
         </div>
 
         <div className="bg-slate-900 border border-slate-850 p-4 rounded-xl space-y-1">
-          <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Value Since Creation</span>
-          {hasCreationBaseline && sinceCreationPct !== null && sinceCreationDeltaUsd !== null ? (
-            <div>
-              <div className={`text-xl font-mono font-black ${sinceCreationPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {sinceCreationPct >= 0 ? '+' : ''}{sinceCreationPct.toFixed(1)}%
-              </div>
-              <div className="text-[11px] font-mono font-medium text-slate-400 mt-0.5">
-                {sinceCreationDeltaUsd >= 0 ? '+' : '-'}${Math.abs(sinceCreationDeltaUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-            </div>
+          <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Basket Harvest</span>
+          {groupHarvestEvents.length > 0 ? (
+            (() => {
+              const isZero = Math.abs(netGroupHarvestUsd) < 0.005;
+              const isPositive = netGroupHarvestUsd >= 0.005;
+              const colorClass = isZero ? 'text-slate-400' : isPositive ? 'text-emerald-400' : 'text-rose-400';
+              const formattedValue = isZero
+                ? '$0.00'
+                : `${isPositive ? '+' : '-'}$${Math.abs(netGroupHarvestUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+              return (
+                <div>
+                  <div className={`text-xl font-mono font-black ${colorClass}`}>
+                    {formattedValue}
+                  </div>
+                  <div className="text-[11px] font-mono font-medium text-slate-400 mt-0.5">
+                    {groupHarvestEvents.length} rebalance {groupHarvestEvents.length === 1 ? 'swap' : 'swaps'}
+                  </div>
+                </div>
+              );
+            })()
           ) : (
             <div>
-              <div className="text-xl font-mono font-black text-slate-500">Pending</div>
-              <div className="text-[11px] font-sans text-slate-500 mt-0.5">Log a snapshot</div>
+              <div className="text-xl font-mono font-black text-slate-400">$0.00</div>
+              <div className="text-[11px] font-sans text-slate-500 mt-0.5">0 rebalance swaps</div>
             </div>
           )}
         </div>
@@ -1007,7 +1454,17 @@ export default function AllocationView({
                             className="w-2.5 h-2.5 rounded-full shrink-0" 
                             style={{ backgroundColor: COIN_LINE_COLORS[group.memberMints.indexOf(item.mint) % COIN_LINE_COLORS.length] || '#475569' }}
                           />
-                          <span className="font-extrabold text-white text-sm">{item.symbol}</span>
+                          <TokenLink mint={item.mint} showIcon>
+                            <span className="font-extrabold text-white text-sm">{item.symbol}</span>
+                          </TokenLink>
+                          {(!isVerifiedCoin || !isVerifiedCoin(item.mint)) && (
+                            <span 
+                              className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 uppercase tracking-wider"
+                              title="This token is not in Jupiter's verified token registry"
+                            >
+                              Unverified
+                            </span>
+                          )}
                           <span className="text-[11px] text-slate-500 font-mono">
                             {isUnknown ? (
                               <span className="text-amber-500/80 animate-pulse font-medium">Resolving decimals on Solana...</span>
@@ -1142,12 +1599,198 @@ export default function AllocationView({
                   <div className="relative">
                     <input
                       type="text"
-                      placeholder="Search coin symbol, name or mint address..."
+                      placeholder="Search coin symbol, name or paste any Solana mint address..."
                       value={addCoinSearchQuery}
                       onChange={(e) => setAddCoinSearchQuery(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all font-mono"
                     />
                   </div>
+
+                  {/* Mint Validation Checking State */}
+                  {validatingMint && (
+                    <div className="flex items-center gap-2 p-3 bg-slate-900/80 border border-slate-800 rounded-lg text-xs text-slate-300 animate-pulse">
+                      <Loader2 className="w-4 h-4 animate-spin text-emerald-400 shrink-0" />
+                      <span>Searching Jupiter & validating address...</span>
+                    </div>
+                  )}
+
+                  {/* Liquidity Pool / Pair Address Suggestion State (Step 1b) */}
+                  {!validatingMint && mintValidationResult.status === 'pool_suggestion' && (
+                    <div className="p-3.5 bg-amber-950/40 border border-amber-900/50 rounded-xl space-y-2.5 text-xs animate-in fade-in duration-150">
+                      <div className="flex gap-2.5 items-start text-amber-300">
+                        <AlertCircle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                        <div className="flex-1">
+                          <p className="text-white font-medium text-xs">
+                            This looks like a liquidity pool or pair address, not a token. Did you mean:
+                          </p>
+                          <div className="mt-2 space-y-1.5">
+                            {mintValidationResult.suggestedTokens?.map((sug) => {
+                              const isSugVerified = sug.isVerified === true || sug.tags?.includes('verified');
+                              return (
+                                <div
+                                  key={sug.address}
+                                  className="flex items-center justify-between p-2 bg-slate-900/90 border border-slate-800 rounded-lg hover:border-amber-500/50 transition-all gap-2"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <TokenLogo logoURI={sug.logoURI} symbol={sug.symbol} size="sm" />
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className="font-bold text-white text-xs">{sug.symbol}</span>
+                                        <span className="text-[10px] text-slate-400 truncate max-w-[120px]">{sug.name}</span>
+                                        <span className="text-[10px] font-mono text-slate-400">
+                                          ({sug.address.slice(0, 4)}...{sug.address.slice(-4)})
+                                        </span>
+                                        {!isSugVerified ? (
+                                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 uppercase tracking-wider">
+                                            Unverified
+                                          </span>
+                                        ) : (
+                                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                                            Verified
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      setAddCoinSearchQuery(sug.address);
+                                    }}
+                                    className="px-2.5 py-1 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold rounded text-[11px] shrink-0 cursor-pointer transition-all shadow"
+                                  >
+                                    Use mint {sug.address.slice(0, 4)}...{sug.address.slice(-4)}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Token Account Detection State (Step 2) */}
+                  {!validatingMint && mintValidationResult.status === 'token_account' && (
+                    <div className="p-3 bg-amber-950/40 border border-amber-900/50 rounded-lg space-y-2 text-xs">
+                      <div className="flex gap-2 items-start text-amber-300">
+                        <AlertCircle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                        <div className="flex-1">
+                          <strong className="text-white font-bold">This is a token account, not a token mint.</strong>
+                          {mintValidationResult.tokenAccountMint && (
+                            <div className="mt-2 flex items-center justify-between">
+                              <span className="text-[11px] text-slate-400 font-mono">
+                                Mint: {mintValidationResult.tokenAccountMint.slice(0, 4)}...{mintValidationResult.tokenAccountMint.slice(-4)}
+                              </span>
+                              <button
+                                onClick={() => setAddCoinSearchQuery(mintValidationResult.tokenAccountMint!)}
+                                className="px-2.5 py-1 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold rounded text-[10px] cursor-pointer"
+                              >
+                                Use mint {mintValidationResult.tokenAccountMint.slice(0, 4)}...{mintValidationResult.tokenAccountMint.slice(-4)}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Mint Validation Error State */}
+                  {!validatingMint && mintValidationResult.status === 'invalid' && mintValidationResult.error && (
+                    <div className="p-3 bg-rose-950/40 border border-rose-900/50 rounded-lg space-y-1 text-xs">
+                      <div className="flex gap-2 items-start text-rose-300">
+                        <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                        <div>
+                          <strong className="text-white font-bold">Invalid Mint Address:</strong>
+                          <p className="text-[11px] text-rose-300 mt-0.5 leading-relaxed font-sans">
+                            {mintValidationResult.error}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Validated Custom Mint Preview Card */}
+                  {!validatingMint && mintValidationResult.status === 'valid' && mintValidationResult.token && (
+                    <div className="p-3 bg-slate-900 border border-emerald-500/40 rounded-xl flex items-center justify-between gap-3 shadow-md animate-in fade-in duration-150">
+                      <div className="flex items-center gap-2.5">
+                        <TokenLogo logoURI={mintValidationResult.token.logoURI} symbol={mintValidationResult.token.symbol} size="md" />
+                        <div>
+                          <div className="font-extrabold text-white text-xs flex items-center gap-1.5 flex-wrap">
+                            <span>{mintValidationResult.token.symbol}</span>
+                            <span className="text-[10px] font-mono text-slate-400 font-normal">
+                              ({mintValidationResult.token.address.slice(0, 4)}...{mintValidationResult.token.address.slice(-4)})
+                            </span>
+                            {!mintValidationResult.isVerified && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 uppercase tracking-wider">
+                                Unverified
+                              </span>
+                            )}
+                            {mintValidationResult.isToken2022 && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/30">
+                                Token-2022
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            {mintValidationResult.token.name} {mintValidationResult.token.decimals !== undefined ? `· ${mintValidationResult.token.decimals} decimals` : ''}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => handleSelectTokenToAdd(mintValidationResult.token!)}
+                        className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-lg text-[10px] flex items-center gap-1 cursor-pointer transition-all shadow shrink-0"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Add to Basket
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Warning Dialog for Unverified Token */}
+                  {pendingUnverifiedWarningToken && (
+                    <div className="p-3.5 bg-amber-950/40 border border-amber-900/50 rounded-xl space-y-2.5 text-xs animate-in fade-in duration-200">
+                      <div className="flex gap-2.5 items-start text-amber-300">
+                        <AlertTriangle className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
+                        <div className="flex-1">
+                          <div className="font-extrabold text-white text-xs flex items-center gap-1.5">
+                            <span>Unverified Token Warning</span>
+                            <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-bold uppercase tracking-wider">Unverified</span>
+                          </div>
+                          <p className="mt-1 text-[11px] text-slate-300 leading-relaxed font-sans">
+                            <strong className="text-white">{pendingUnverifiedWarningToken.symbol}</strong> ({pendingUnverifiedWarningToken.address.slice(0, 6)}...{pendingUnverifiedWarningToken.address.slice(-4)}) is not in Jupiter's verified token registry. Unverified tokens carry heightened risk of low DEX liquidity, price spoofing, high slippage, or failed rebalancing swaps. Ensure you trust this contract address.
+                          </p>
+                          {(pendingUnverifiedWarningToken as any).liquidity !== undefined && (
+                            <div className="mt-2 p-2 bg-slate-900/90 rounded border border-amber-500/25 text-[11px] text-amber-300">
+                              <span>DEX Liquidity: </span>
+                              <strong className="text-white font-mono">
+                                ${Number((pendingUnverifiedWarningToken as any).liquidity).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                              </strong>
+                              {(pendingUnverifiedWarningToken as any).liquidity < 50000 && (
+                                <span className="text-amber-400 font-semibold ml-1.5">
+                                  (Low liquidity: below standard $50,000 threshold)
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex gap-2 justify-end pt-1">
+                        <button
+                          onClick={() => setPendingUnverifiedWarningToken(null)}
+                          className="px-3 py-1.5 text-[10px] font-bold text-slate-400 hover:text-white bg-slate-900 rounded-lg hover:bg-slate-800 cursor-pointer transition-all"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => handleConfirmAddUnverifiedToken(pendingUnverifiedWarningToken)}
+                          className="px-3 py-1.5 text-[10px] font-black text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg cursor-pointer transition-all shadow"
+                        >
+                          I Understand, Add to Basket
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Warning Dialog for Liquidity */}
                   {pendingWarningToken && (
@@ -1170,7 +1813,7 @@ export default function AllocationView({
                         </button>
                         <button
                           onClick={() => {
-                            handleAddCoinDirect(pendingWarningToken.token.address);
+                            handleAddCoinDirect(pendingWarningToken.token.address, pendingWarningToken.token);
                             setPendingWarningToken(null);
                           }}
                           className="px-2.5 py-1 text-[10px] font-extrabold text-slate-950 bg-amber-400 rounded hover:bg-amber-300 cursor-pointer"
@@ -1189,11 +1832,13 @@ export default function AllocationView({
                       </div>
                     ) : (
                       (() => {
-                        let listToUse = verifiedTokens.length > 0 ? verifiedTokens : Object.entries(tokenMetadata).map(([addr, t]) => ({
+                        let listToUse: any[] = verifiedTokens.length > 0 ? [...verifiedTokens] : Object.entries(tokenMetadata).map(([addr, t]) => ({
                           address: addr,
                           symbol: t.symbol,
                           name: t.name || 'Unknown',
                           decimals: t.decimals,
+                          logoURI: t.logoURI,
+                          tags: t.tags || ['verified'],
                         }));
 
                         // Exclude current group members
@@ -1208,6 +1853,15 @@ export default function AllocationView({
                               (t.name && t.name.toLowerCase().includes(q)) ||
                               t.address.toLowerCase() === q
                           );
+
+                          // Merge in Jupiter search results (avoiding duplicates)
+                          const seenAddresses = new Set(listToUse.map((t) => t.address));
+                          jupiterSearchResults.forEach((jupT) => {
+                            if (!group.memberMints.includes(jupT.address) && !seenAddresses.has(jupT.address)) {
+                              seenAddresses.add(jupT.address);
+                              listToUse.push(jupT);
+                            }
+                          });
                         }
 
                         // Sort: wallet balances first, then alphabetically by symbol
@@ -1223,32 +1877,58 @@ export default function AllocationView({
                         const displayedList = listToUse.slice(0, 50);
 
                         if (displayedList.length === 0) {
-                          return <div className="text-center py-4 text-xs text-slate-500">No matching verified coins found.</div>;
+                          if (searchingJupiter) {
+                            return (
+                              <div className="flex items-center justify-center py-6 text-center text-xs text-slate-400 gap-2">
+                                <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                                <span>Searching Jupiter tokens...</span>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="text-center py-4 text-xs text-slate-500 space-y-1">
+                              <div>No matching tokens found.</div>
+                              <div className="text-[11px] text-slate-600 font-sans">
+                                Paste any Solana mint or pool address above to search.
+                              </div>
+                            </div>
+                          );
                         }
 
-                        return displayedList.map((token) => {
+                        return displayedList.map((token: any) => {
                           const mint = token.address;
                           const meta = tokenMetadata[mint] || token;
                           const otherGroup = groups.find((g) => g.memberMints.includes(mint) && g.id !== group.id);
                           const balanceRaw = allBalances[mint] || 0;
-                          const balanceHuman = meta.decimals !== undefined ? balanceRaw / Math.pow(10, meta.decimals) : 0;
+                          const decimals = token.decimals !== undefined ? token.decimals : meta.decimals;
+                          const balanceHuman = decimals !== undefined ? balanceRaw / Math.pow(10, decimals) : 0;
+                          const isCoinVerified = Boolean(
+                            token.isVerified === true ||
+                            (isVerifiedCoin && isVerifiedCoin(mint)) ||
+                            meta.tags?.includes('verified') ||
+                            token.tags?.includes('verified') ||
+                            verifiedTokens.some((vt) => vt.address === mint)
+                          );
 
                           return (
                             <div key={mint} className="flex justify-between items-center py-2 text-xs first:pt-0">
                               <div className="flex items-center gap-2">
-                                <div className="w-6 h-6 bg-slate-900 rounded-full flex items-center justify-center font-bold text-[10px] text-slate-400">
-                                  {meta.symbol ? meta.symbol.substring(0, 2) : '??'}
-                                </div>
+                                <TokenLogo logoURI={token.logoURI || meta.logoURI} symbol={token.symbol || meta.symbol} size="sm" />
                                 <div>
-                                  <div className="font-extrabold text-white flex items-center gap-1.5">
-                                    <span>{meta.symbol}</span>
+                                  <div className="font-extrabold text-white flex items-center gap-1.5 flex-wrap">
+                                    <span>{token.symbol || meta.symbol}</span>
+                                    {!isCoinVerified && (
+                                      <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 uppercase tracking-wider">
+                                        Unverified
+                                      </span>
+                                    )}
                                     {balanceHuman > 0 && (
                                       <span className="text-[9px] text-emerald-400 font-mono">
                                         ({balanceHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })} in wallet)
                                       </span>
                                     )}
                                   </div>
-                                  <div className="text-[10px] text-slate-500 max-w-[180px] truncate">{meta.name}</div>
+                                  <div className="text-[10px] text-slate-500 max-w-[180px] truncate">{token.name || meta.name}</div>
                                 </div>
                               </div>
 
@@ -1271,11 +1951,13 @@ export default function AllocationView({
                                   </div>
                                 ) : (
                                   <button
-                                    onClick={() => handleAddCoinPreCheck({
+                                    onClick={() => handleSelectTokenToAdd({
                                       address: token.address,
                                       symbol: token.symbol,
                                       name: token.name,
-                                      decimals: token.decimals || 9
+                                      decimals: decimals,
+                                      logoURI: token.logoURI || meta.logoURI,
+                                      tags: token.tags || (isCoinVerified ? ['verified'] : ['unverified']),
                                     })}
                                     disabled={checkingLiquidity !== null}
                                     className="bg-emerald-500 hover:bg-emerald-450 text-slate-950 px-3 py-1 rounded-lg text-[10px] font-black cursor-pointer transition-all flex items-center gap-1"
@@ -1497,19 +2179,31 @@ export default function AllocationView({
                                       <Check className="w-3.5 h-3.5 text-emerald-400" /> Swap Succeeded
                                     </span>
                                   ) : (
-                                    <span className="text-xs text-rose-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/30 animate-pulse" title={rebalanceStatus[idx].error}>
-                                      <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> Swap Failed
-                                    </span>
+                                    <div className="flex flex-col items-end gap-0.5">
+                                      <span className="text-xs text-rose-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/30 animate-pulse">
+                                        <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> Swap Failed
+                                      </span>
+                                      {rebalanceStatus[idx].error && (
+                                        <span className="text-[10px] text-rose-400 font-mono max-w-[220px] text-right truncate" title={rebalanceStatus[idx].error}>
+                                          {rebalanceStatus[idx].error}
+                                        </span>
+                                      )}
+                                    </div>
                                   )
                                 ) : rebalancing && rebalanceStep === idx + 1 ? (
                                   <span className="text-xs text-amber-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 animate-pulse">
                                     <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" /> Signing Swap...
                                   </span>
                                 ) : quoteInfo?.error ? (
-                                  <span className="text-xs text-rose-400 font-bold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/5 border border-rose-500/10">
-                                    <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> 
-                                    {quoteInfo.error.includes('small') ? 'Too Small to Route' : 'Quote Failed'}
-                                  </span>
+                                  <div className="flex flex-col items-end gap-0.5">
+                                    <span className="text-xs text-rose-400 font-bold flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-500/5 border border-rose-500/10">
+                                      <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> 
+                                      {quoteInfo.error.includes('small') ? 'Too Small to Route' : 'Quote Failed'}
+                                    </span>
+                                    <span className="text-[10px] text-rose-400/90 font-mono max-w-[200px] text-right truncate" title={quoteInfo.error}>
+                                      {quoteInfo.error}
+                                    </span>
+                                  </div>
                                 ) : quoteInfo ? (
                                   <span className="text-xs text-emerald-400 font-extrabold flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/5 border border-emerald-500/10">
                                     <Check className="w-3.5 h-3.5 text-emerald-400" /> Direct Route Verified
@@ -1563,7 +2257,9 @@ export default function AllocationView({
                             {resultingBalancesWithWeights.map((coin) => (
                               <div key={coin.mint} className="flex justify-between items-center text-[11px] font-mono">
                                 <span className="text-slate-400 flex items-center gap-1">
-                                  <strong>{coin.symbol}</strong>
+                                  <TokenLink mint={coin.mint} showIcon>
+                                    <strong className="text-slate-300">{coin.symbol}</strong>
+                                  </TokenLink>
                                   <span className={coin.netUnitChange >= 0 ? 'text-emerald-400 text-[10px]' : 'text-rose-400 text-[10px]'}>
                                     ({coin.netUnitChange >= 0 ? '+' : ''}{coin.netUnitChange.toLocaleString(undefined, { maximumFractionDigits: 4 })})
                                   </span>
@@ -1618,6 +2314,19 @@ export default function AllocationView({
                             className="h-full bg-emerald-500 transition-all duration-300"
                             style={{ width: `${(rebalanceStep / activeSwaps.length) * 100}%` }}
                           />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Explicit Rebalance Error Banner */}
+                    {Object.values(rebalanceStatus).some((s: { success: boolean; error?: string }) => s && !s.success) && (
+                      <div className="p-3.5 bg-rose-950/40 border border-rose-900/50 rounded-xl flex items-start gap-2.5 text-xs text-rose-300 animate-in fade-in duration-200">
+                        <AlertCircle className="w-4.5 h-4.5 text-rose-400 shrink-0 mt-0.5" />
+                        <div className="space-y-0.5">
+                          <span className="font-extrabold text-white text-xs">Rebalance Swap Failed:</span>
+                          <p className="text-[11px] text-rose-300/90 leading-relaxed font-mono">
+                            {(Object.values(rebalanceStatus) as Array<{ success: boolean; error?: string }>).find((s) => s && !s.success)?.error || 'Transaction was rejected or on-chain execution failed.'}
+                          </p>
                         </div>
                       </div>
                     )}
@@ -1685,19 +2394,18 @@ export default function AllocationView({
 
         </div>
 
-        {/* Right Column (1 Col) - Group's scoreboard & snapshot stats */}
+        {/* Right Column (1 Col) - Basket allocation overview & Harvest */}
         <div className="space-y-6">
-          <ScoreboardView
+          <BasketOverview
             group={group}
-            snapshots={groupSnapshots}
             groupBalances={groupBalances}
             tokenMetadata={tokenMetadata}
-            onSaveSnapshot={() => {
-              onSaveSnapshot(group.id, group.name, getGroupBalances(), totalUsdValue, 'manual');
-              setShowSnapshotSuccess(true);
-              setTimeout(() => setShowSnapshotSuccess(false), 3000);
-            }}
-            showSnapshotSuccess={showSnapshotSuccess}
+          />
+          <ScoreboardView
+            group={group}
+            harvestEvents={harvestLedger}
+            groupBalances={groupBalances}
+            tokenMetadata={tokenMetadata}
           />
         </div>
 
@@ -1711,7 +2419,6 @@ export default function AllocationView({
           onClose={() => setIsCashingOut(false)}
           onUpdateGroup={onUpdateGroup}
           onDeleteGroup={onDeleteGroup}
-          onSaveSnapshot={onSaveSnapshot}
           onRefreshPrices={onRefreshPrices}
         />
       )}

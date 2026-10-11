@@ -14,10 +14,6 @@ h1, h2, h3, h4, h5, h6, .display-font, .font-display, .font-rounded {
 }
 
 /* Keep serious risk sections strictly in readable legible sans-serif, no cartoon styling */
-.risk-disclosure, 
-.risk-disclosure *, 
-#disclaimer-banner, 
-#disclaimer-banner *, 
 #disclaimer-card, 
 #disclaimer-card *,
 .serious-warning,
@@ -28,6 +24,13 @@ h1, h2, h3, h4, h5, h6, .display-font, .font-display, .font-rounded {
   box-shadow: none !important;
   border-width: 1px !important;
   border-color: #334155 !important; /* slate-700 */
+}
+
+#disclaimer-banner,
+#disclaimer-banner * {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 /* 2. Loose, Wobbly & Playful Card containers */

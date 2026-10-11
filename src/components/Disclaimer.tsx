@@ -1,35 +1,17 @@
-import { ShieldAlert, Info, X } from 'lucide-react';
+import { Info } from 'lucide-react';
 
 interface DisclaimerProps {
   onDismiss?: () => void;
   showDismissButton?: boolean;
 }
 
-export default function Disclaimer({ onDismiss, showDismissButton = false }: DisclaimerProps) {
+export default function Disclaimer(_props?: DisclaimerProps) {
   return (
-    <div id="disclaimer-banner" className="risk-disclosure bg-amber-500/10 border border-amber-500/20 p-5 rounded-xl shadow-sm relative overflow-hidden transition-all duration-300">
-      <div className="flex gap-4">
-        <div className="flex-shrink-0 text-amber-500">
-          <ShieldAlert className="w-5 h-5 animate-pulse" />
-        </div>
-        <div className="flex-grow">
-          <h4 className="text-amber-400 font-bold text-xs uppercase tracking-wider flex items-center gap-1.5">
-            Risk Disclosure & Strategy Warning
-          </h4>
-          <p className="text-slate-300 text-xs mt-1.5 leading-relaxed font-sans font-normal">
-            This is a <strong className="text-amber-400 font-semibold">volatility-harvesting rebalancer</strong>. It profits when your chosen coins oscillate and all remain long-term viable. It will <span className="underline font-medium text-rose-400">actively move your funds into any coin that is genuinely dying</span>. Coin selection is the entire risk (choose coins you would hold through a full cycle, not lottery tickets). This is not financial advice. You approve and sign every transaction yourself.
-          </p>
-        </div>
-        {showDismissButton && onDismiss && (
-          <button
-            onClick={onDismiss}
-            className="flex-shrink-0 text-amber-500 hover:text-amber-400 p-1 rounded-md transition-colors cursor-pointer"
-            title="Dismiss Disclaimer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        )}
-      </div>
+    <div id="disclaimer-banner" className="risk-disclosure w-full max-w-5xl mx-auto px-4 py-3 text-center">
+      <p className="text-[12px] text-slate-500 leading-relaxed font-sans">
+        <span className="font-semibold text-slate-400">Risk Disclosure &amp; Strategy Warning:</span>{' '}
+        This is a volatility-harvesting rebalancer. It profits when your chosen coins oscillate and all remain long-term viable. It will actively move your funds into any coin that is genuinely dying. Coin selection is the entire risk (choose coins you would hold through a full cycle, not lottery tickets). This is not financial advice. You approve and sign every transaction yourself.
+      </p>
     </div>
   );
 }

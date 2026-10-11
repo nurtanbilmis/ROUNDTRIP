@@ -79,7 +79,45 @@ export async function verifyJupiterToken(mint: string): Promise<Token | null> {
 }
 
 /**
- * Fetches token metadata for a single mint from tokens.jup.ag API.
+ * Searches tokens via Jupiter Tokens API v2.
+ */
+export async function searchJupiterTokens(query: string): Promise<(Token & { isVerified: boolean; id?: string })[]> {
+  if (!query || !query.trim()) return [];
+  const headers: Record<string, string> = {};
+  const apiKey = (import.meta as any).env.VITE_JUP_API_KEY || (import.meta as any).env.VITE_JUPITER_API_KEY || '';
+  if (apiKey) {
+    headers['x-api-key'] = apiKey;
+  }
+
+  try {
+    const res = await fetch(`${TOKENS_API_BASE}/tokens/v2/search?query=${encodeURIComponent(query.trim())}`, { headers });
+    if (!res.ok) {
+      return [];
+    }
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      return data.map((item: any) => {
+        const isVerified = item.isVerified === true || (Array.isArray(item.tags) && item.tags.includes('verified'));
+        return {
+          id: item.id,
+          address: item.id,
+          symbol: item.symbol || 'Unknown',
+          name: item.name || 'Unknown Token',
+          decimals: typeof item.decimals === 'number' ? item.decimals : undefined,
+          logoURI: item.icon || item.logoURI || undefined,
+          tags: item.tags || (isVerified ? ['verified'] : ['unverified']),
+          isVerified,
+        };
+      });
+    }
+  } catch (err) {
+    console.warn(`Error searching Jupiter tokens for "${query}":`, err);
+  }
+  return [];
+}
+
+/**
+ * Fetches token metadata for a single mint using searchJupiterTokens.
  */
 export async function fetchTokenMetadata(mint: string): Promise<Token | null> {
   // First, check if we have it in our local static registry
@@ -91,23 +129,22 @@ export async function fetchTokenMetadata(mint: string): Promise<Token | null> {
       name: meta.name,
       decimals: meta.decimals,
       logoURI: meta.logoURI,
+      tags: ['verified'],
     };
   }
 
   try {
-    const res = await fetch(`https://tokens.jup.ag/token/${mint}`);
-    if (!res.ok) {
-      return null;
-    }
-    const data = await res.json();
-    if (data) {
+    const results = await searchJupiterTokens(mint);
+    const matched = results.find((item: any) => item.id === mint || item.address === mint);
+    if (matched) {
       return {
-        address: data.address || mint,
-        symbol: data.symbol || 'Unknown',
-        name: data.name || 'Unknown Token',
-        decimals: typeof data.decimals === 'number' ? data.decimals : undefined,
-        logoURI: data.logoURI || data.icon || undefined,
-      } as any;
+        address: matched.address,
+        symbol: matched.symbol,
+        name: matched.name,
+        decimals: matched.decimals,
+        logoURI: matched.logoURI,
+        tags: matched.tags,
+      };
     }
   } catch (err) {
     console.warn(`Error fetching token metadata for ${mint} via Jupiter API:`, err);

@@ -3,20 +3,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { WalletProvider, useSolanaWallet } from './components/WalletProvider';
 import Disclaimer, { DisclaimerCard } from './components/Disclaimer';
 import CoinPicker from './components/CoinPicker';
 import ConvertModal from './components/ConvertModal';
 import AllocationView from './components/AllocationView';
 import PriceView from './components/PriceView';
-import HistoryView from './components/HistoryView';
 import LeaderboardView from './components/LeaderboardView';
 import ConfirmModal from './components/ConfirmModal';
 import { PRESETS, Preset } from './presets';
 import PresetVerifier from './components/PresetVerifier';
 import TokenLogo from './components/TokenLogo';
-import { Token, TokenBalance, BalanceSnapshot, LinkGroup, getGroupColorClasses, formatPrice, COIN_METADATA, DEFAULT_POPULAR_MINTS } from './types';
+import TokenLink from './components/TokenLink';
+import { useTokenViewer } from './tokenViewer';
+import { DEFAULT_RPC_URL } from './rpc';
+import { Token, TokenBalance, LinkGroup, HarvestEvent, getGroupColorClasses, formatPrice, COIN_METADATA, DEFAULT_POPULAR_MINTS } from './types';
 import { fetchPricesAndInfo, fetchQuote } from './jupiter';
 import {
   Wallet,
@@ -52,13 +54,6 @@ const getNextGroupColor = (activeGroups: LinkGroup[]): string => {
   return colors[activeGroups.length % colors.length];
 };
 
-const STANDARD_PUBLIC_RPCS = [
-  'https://api.mainnet-beta.solana.com',
-  'https://rpc.ankr.com/solana',
-  'https://solana.public-rpc.com',
-  'https://api.turing.solana.com'
-];
-
 function Dashboard() {
   const {
     publicKey,
@@ -80,9 +75,7 @@ function Dashboard() {
     setSlippageBps,
   } = useSolanaWallet();
 
-  const [rpcWarningDismissed, setRpcWarningDismissed] = useState<boolean>(() => {
-    return localStorage.getItem('roundtrip_rpc_warning_dismissed') === 'true';
-  });
+  const [tokenViewer, setTokenViewer] = useTokenViewer();
 
   // Confirm Action Modal for Rent Reclaim and Convert to SOL
   const [confirmActionModal, setConfirmActionModal] = useState<{
@@ -207,14 +200,14 @@ function Dashboard() {
   // Multi-group state
   const [groups, setGroups] = useState<LinkGroup[]>([]);
 
-  // Scoreboard snapshots (historical ledger)
-  const [snapshots, setSnapshots] = useState<BalanceSnapshot[]>([]);
+  // Harvest event ledger
+  const [harvestLedger, setHarvestLedger] = useState<HarvestEvent[]>([]);
 
-  // Load and migrate groups and snapshots for activeNamespace
+  // Load and migrate groups and harvest ledger for activeNamespace
   useEffect(() => {
     const ns = activeNamespace;
     let loadedGroups: LinkGroup[] = [];
-    let loadedSnapshots: BalanceSnapshot[] = [];
+    let loadedHarvest: HarvestEvent[] = [];
 
     const savedGroupsKey = `roundtrip_link_groups__${ns}`;
     const savedGroups = localStorage.getItem(savedGroupsKey);
@@ -227,24 +220,16 @@ function Dashboard() {
         }
       } catch (e) {}
 
-      // Load snapshots for this namespace
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith(`roundtrip_snapshots__${ns}__`)) {
-          const saved = localStorage.getItem(key);
-          if (saved) {
-            try {
-              const parsed = JSON.parse(saved);
-              if (Array.isArray(parsed)) {
-                parsed.forEach((item) => {
-                  if (item && typeof item === 'object') {
-                    loadedSnapshots.push(item);
-                  }
-                });
-              }
-            } catch (e) {}
+      // Load harvest ledger for this namespace
+      const harvestKey = `roundtrip_harvest_ledger__${ns}`;
+      const savedHarvest = localStorage.getItem(harvestKey);
+      if (savedHarvest) {
+        try {
+          const parsed = JSON.parse(savedHarvest);
+          if (Array.isArray(parsed)) {
+            loadedHarvest = parsed;
           }
-        }
+        } catch (e) {}
       }
     } else {
       // No groups exist for this namespace.
@@ -259,26 +244,17 @@ function Dashboard() {
             if (Array.isArray(parsedGuestGroups) && parsedGuestGroups.length > 0) {
               loadedGroups = parsedGuestGroups;
               
-              // Move snapshots from guest to real wallet namespace
-              for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (key && key.startsWith(`roundtrip_snapshots__guest__`)) {
-                  const saved = localStorage.getItem(key);
-                  if (saved) {
-                    try {
-                      const parsed = JSON.parse(saved);
-                      if (Array.isArray(parsed)) {
-                        parsed.forEach((item) => {
-                          if (item && typeof item === 'object') {
-                            loadedSnapshots.push(item);
-                          }
-                        });
-                      }
-                    } catch (e) {}
-                    // Delete guest snapshot key
-                    localStorage.removeItem(key);
+              // Move harvest ledger from guest to real wallet namespace
+              const guestHarvestKey = `roundtrip_harvest_ledger__guest`;
+              const guestHarvestStr = localStorage.getItem(guestHarvestKey);
+              if (guestHarvestStr) {
+                try {
+                  const parsed = JSON.parse(guestHarvestStr);
+                  if (Array.isArray(parsed)) {
+                    loadedHarvest = parsed;
                   }
-                }
+                } catch (e) {}
+                localStorage.removeItem(guestHarvestKey);
               }
               
               // Clear guest groups
@@ -289,9 +265,7 @@ function Dashboard() {
         }
       }
 
-      // Case B: If still empty (e.g. no guest groups or it was guest namespace),
-      // check for legacy migration (for whichever namespace is currently active,
-      // e.g., if a user loads the app with or without connected wallet).
+      // Case B: If still empty, check for legacy migration
       if (loadedGroups.length === 0) {
         const legacyGroupsStr = localStorage.getItem('roundtrip_link_groups');
         if (legacyGroupsStr) {
@@ -299,38 +273,6 @@ function Dashboard() {
             const parsedLegacyGroups = JSON.parse(legacyGroupsStr);
             if (Array.isArray(parsedLegacyGroups) && parsedLegacyGroups.length > 0) {
               loadedGroups = parsedLegacyGroups;
-              
-              // Move legacy snapshots: keys starts with 'roundtrip_snapshots_' (but not 'roundtrip_snapshots__')
-              const legacySnapshotKeys: string[] = [];
-              for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (key && key.startsWith('roundtrip_snapshots_') && !key.startsWith('roundtrip_snapshots__')) {
-                  legacySnapshotKeys.push(key);
-                }
-              }
-
-              legacySnapshotKeys.forEach((key) => {
-                const saved = localStorage.getItem(key);
-                if (saved) {
-                  try {
-                    const parsed = JSON.parse(saved);
-                    if (Array.isArray(parsed)) {
-                      parsed.forEach((item) => {
-                        if (item && typeof item === 'object') {
-                          loadedSnapshots.push(item);
-                        }
-                      });
-                    }
-                  } catch (e) {}
-                  
-                  // Clean up legacy snapshot keys
-                  localStorage.removeItem(key);
-                }
-              });
-
-              // Clean up legacy roundtrip_snapshots
-              localStorage.removeItem('roundtrip_snapshots');
-              // Clean up legacy link groups
               localStorage.removeItem('roundtrip_link_groups');
               console.log(`Migrated legacy groups into namespace ${ns}`);
             }
@@ -339,22 +281,9 @@ function Dashboard() {
       }
     }
 
-    // Deduplicate and assign snapshot IDs
-    const seenIds = new Set<string>();
-    const finalSnapshots: BalanceSnapshot[] = [];
-    loadedSnapshots.forEach((snap) => {
-      if (snap && typeof snap === 'object') {
-        if (!snap.id || seenIds.has(snap.id)) {
-          snap.id = `Snapshot_${snap.timestamp || Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-        }
-        seenIds.add(snap.id);
-        finalSnapshots.push(snap);
-      }
-    });
-
     // Update states
     setGroups(loadedGroups);
-    setSnapshots(finalSnapshots);
+    setHarvestLedger(loadedHarvest);
     
     // Set the loaded namespace state
     setHydratedNamespace(ns);
@@ -379,7 +308,7 @@ function Dashboard() {
   const [loadingPrices, setLoadingPrices] = useState(false);
 
   // Nav routing states
-  const [activeTab, setActiveTab] = useState<'wallet' | 'prices' | 'history' | 'leaderboard'>('wallet');
+  const [activeTab, setActiveTab] = useState<'wallet' | 'prices' | 'leaderboard'>('wallet');
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null); // Null means Screen 1, otherwise active Screen 2
   const [linkingGroupId, setLinkingGroupId] = useState<string | null>(null); // Group currently in Direct Link Mode
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
@@ -393,7 +322,6 @@ function Dashboard() {
   const [showConvertModal, setShowConvertModal] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<Preset | null>(null);
   const [showRpcSettings, setShowRpcSettings] = useState(false);
-  const [showDisclaimerBanner, setShowDisclaimerBanner] = useState(true);
 
   // In-app interactive messages/modals replacing window popup/alerts
   const [convertSuccessMessage, setConvertSuccessMessage] = useState<string | null>(null);
@@ -420,121 +348,19 @@ function Dashboard() {
     }
   }, [groups, activeNamespace, hydratedNamespace]);
 
-  // Persist snapshots for active namespace
+  // Persist harvest ledger for active namespace
   useEffect(() => {
     const ns = activeNamespace;
     if (hydratedNamespace !== activeNamespace) {
       // Race protection: skip saving if current in-memory state hasn't been loaded for the active namespace yet.
       return;
     }
-
-    // Group snapshots by groupId
-    const grouped: Record<string, BalanceSnapshot[]> = {};
-    snapshots.forEach((s) => {
-      if (s && s.groupId) {
-        if (!grouped[s.groupId]) grouped[s.groupId] = [];
-        grouped[s.groupId].push(s);
-      }
-    });
-
-    const prunedSnapshotsList: BalanceSnapshot[] = [];
-    
-    // Process and prune each group
-    Object.entries(grouped).forEach(([gId, snaps]) => {
-      // Sort chronologically (oldest to newest)
-      const sortedSnaps = [...snaps].sort((a, b) => a.timestamp - b.timestamp);
-      // Keep only the latest 30 snapshots per group to avoid filling up localStorage
-      const prunedSnaps = sortedSnaps.slice(-30);
-      prunedSnapshotsList.push(...prunedSnaps);
-
-      try {
-        localStorage.setItem(`roundtrip_snapshots__${ns}__${gId}`, JSON.stringify(prunedSnaps));
-      } catch (err) {
-        console.warn(`Failed to save snapshots for group ${gId} due to quota limit:`, err);
-        // Fallback: prune even more aggressively to keep the app working
-        try {
-          const aggressivePrune = prunedSnaps.slice(-10);
-          localStorage.setItem(`roundtrip_snapshots__${ns}__${gId}`, JSON.stringify(aggressivePrune));
-        } catch (innerErr) {
-          console.error(`Failed to save snapshots for group ${gId} even with aggressive pruning:`, innerErr);
-        }
-      }
-    });
-
-    // Sync state if we pruned some snapshots
-    if (prunedSnapshotsList.length < snapshots.length) {
-      setSnapshots(prunedSnapshotsList);
+    try {
+      localStorage.setItem(`roundtrip_harvest_ledger__${ns}`, JSON.stringify(harvestLedger));
+    } catch (err) {
+      console.warn('Failed to save harvest ledger to localStorage:', err);
     }
-
-    // Clean up empty/obsolete keys for this namespace
-    const activeGroupIds = new Set(
-      prunedSnapshotsList
-        .filter((s) => s && s.groupId)
-        .map((s) => s.groupId)
-    );
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(`roundtrip_snapshots__${ns}__`)) {
-        const gId = key.replace(`roundtrip_snapshots__${ns}__`, '');
-        if (!activeGroupIds.has(gId)) {
-          localStorage.removeItem(key);
-        }
-      }
-    }
-  }, [snapshots, activeNamespace, hydratedNamespace]);
-
-  // Monitor membership changes (coin added/removed/moved) to fire snapshots automatically
-  const prevGroupsRef = useRef<LinkGroup[]>(groups);
-  useEffect(() => {
-    const prevGroups = prevGroupsRef.current;
-    
-    groups.forEach((grp) => {
-      const prevGrp = prevGroups.find((g) => g.id === grp.id);
-      
-      const triggerMembershipSnapshot = (targetGrp: LinkGroup) => {
-        const grpBalances = targetGrp.memberMints.map((mint) => {
-          const meta = tokenMetadata[mint] || { symbol: mint.substring(0, 4), decimals: 9 };
-          const priceInfo = prices[mint] || { price: 0, change24h: 0 };
-          const rawBalance = balances[mint] || 0;
-          const amountHuman = rawBalance / Math.pow(10, meta.decimals || 9);
-          const usdValue = amountHuman * priceInfo.price;
-          
-          return {
-            mint,
-            symbol: meta.symbol,
-            decimals: meta.decimals || 9,
-            amount: rawBalance,
-            amountHuman,
-            price: priceInfo.price,
-            usdValue,
-            currentWeight: 0,
-            targetWeight: 0,
-            drift: 0,
-            change24h: priceInfo.change24h,
-          };
-        });
-        
-        const grpTotalUsd = grpBalances.reduce((sum, b) => sum + b.usdValue, 0);
-        handleSaveSnapshot(targetGrp.id, targetGrp.name, grpBalances, grpTotalUsd, 'membership');
-      };
-
-      if (!prevGrp) {
-        // New group with member mints
-        if (grp.memberMints.length > 0) {
-          triggerMembershipSnapshot(grp);
-        }
-      } else {
-        const prevMints = [...prevGrp.memberMints].sort().join(',');
-        const currMints = [...grp.memberMints].sort().join(',');
-        if (prevMints !== currMints) {
-          // Membership changed (added/removed/moved)
-          triggerMembershipSnapshot(grp);
-        }
-      }
-    });
-
-    prevGroupsRef.current = groups;
-  }, [groups, tokenMetadata, prices, balances]);
+  }, [harvestLedger, activeNamespace, hydratedNamespace]);
 
   const handleCreateGroup = () => {
     if (!newGroupName.trim()) return;
@@ -803,51 +629,37 @@ function Dashboard() {
   const totalLinkedValue = groups.reduce((sum, g) => sum + getGroupStats(g).totalUsd, 0);
   const unlinkedInventoryValue = Math.max(0, totalWalletValue - totalLinkedValue);
 
+  // Harvest ledger net delta PnL metrics
+  const netHarvestUsd = useMemo(() => {
+    const netUnits: Record<string, number> = {};
+    for (const e of harvestLedger) {
+      if (e.boughtMint) {
+        netUnits[e.boughtMint] = (netUnits[e.boughtMint] || 0) + (e.boughtUnits || 0);
+      }
+      if (e.soldMint) {
+        netUnits[e.soldMint] = (netUnits[e.soldMint] || 0) - (e.soldUnits || 0);
+      }
+    }
+    let sumUsd = 0;
+    for (const [mint, units] of Object.entries(netUnits)) {
+      const price = prices[mint]?.price || 0;
+      sumUsd += units * price;
+    }
+    return sumUsd;
+  }, [harvestLedger, prices]);
+
+  const firstHarvestTs = harvestLedger.length > 0
+    ? Math.min(...harvestLedger.map((e) => e.timestamp).filter(Boolean))
+    : null;
+
   // Group Details router resolver
   const activeGroup = groups.find((g) => g.id === selectedGroupId);
 
-  // Save scoreboard snapshot logging
-  const handleSaveSnapshot = (
-    groupId: string,
-    groupName: string,
-    snapshotBalances: TokenBalance[],
-    totalUsd: number,
-    eventType: 'convert' | 'rebalance' | 'cashout' | 'membership' | 'manual' = 'manual'
-  ) => {
-    const newSnapshot: BalanceSnapshot = {
-      id: 'Snapshot_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9),
-      groupId,
-      groupName,
-      eventType,
-      timestamp: Date.now(),
-      totalUsdValue: totalUsd,
-      balances: snapshotBalances.map((b) => ({
-        mint: b.mint,
-        symbol: b.symbol,
-        units: b.amountHuman, // units representation as requested
-        amountHuman: b.amountHuman, // keep amountHuman for backwards compatibility
-        price: b.price,
-        usdValue: b.usdValue,
-      })),
-    };
-
-    setSnapshots((prev) => {
-      const DEBOUNCE_MS = 6000; // De-duplicate snapshots for the same group within 6 seconds
-      const sameGroupSnaps = prev.filter((s) => s.groupId === groupId);
-      if (sameGroupSnaps.length > 0) {
-        const lastSnap = sameGroupSnaps[sameGroupSnaps.length - 1];
-        if (Date.now() - lastSnap.timestamp < DEBOUNCE_MS) {
-          const lastIdx = prev.indexOf(lastSnap);
-          if (lastIdx !== -1) {
-            const copy = [...prev];
-            copy[lastIdx] = newSnapshot;
-            return copy;
-          }
-        }
-      }
-      return [...prev, newSnapshot];
-    });
-  };
+  // Record harvest events callback
+  const recordHarvestEvents = useCallback((events: HarvestEvent[]) => {
+    if (!events || events.length === 0) return;
+    setHarvestLedger((prev) => [...prev, ...events]);
+  }, []);
 
   const handleMoveToken = (mint: string, fromGroup: LinkGroup, toGroup: LinkGroup) => {
     setPendingConfirmMove({
@@ -950,16 +762,6 @@ function Dashboard() {
                 }`}
               >
                 Market Intel
-              </button>
-              <button
-                onClick={() => {
-                  setActiveTab('history');
-                }}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  activeTab === 'history' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Historical ledger logs
               </button>
               <button
                 onClick={() => {
@@ -1106,33 +908,9 @@ function Dashboard() {
           </main>
         )}
 
-        {activeTab === 'history' && (
-          <main className="max-w-6xl mx-auto px-6 py-24 flex-grow flex flex-col justify-center items-center w-full">
-            <div className="bg-slate-900 border border-slate-850 p-10 rounded-2xl shadow-2xl text-center space-y-5 max-w-md mx-auto relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-2xl rounded-full"></div>
-              <div className="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mx-auto">
-                <Lock className="w-8 h-8" />
-              </div>
-              <div className="space-y-2">
-                <h3 className="font-extrabold text-white text-xl">Your ledger is private</h3>
-                <p className="text-slate-400 text-xs leading-relaxed">
-                  Connect your wallet to view your rebalancing history and coin scoreboard.
-                </p>
-              </div>
-              <button
-                onClick={() => connect()}
-                className="w-full bg-emerald-500 hover:bg-emerald-450 text-slate-950 font-extrabold py-3 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10 cursor-pointer text-xs"
-              >
-                <Wallet className="w-4 h-4 text-slate-950" />
-                Connect Solana Wallet
-              </button>
-            </div>
-          </main>
-        )}
-
         {activeTab === 'leaderboard' && (
           <main className="max-w-6xl mx-auto px-6 py-12 flex-grow flex flex-col justify-start space-y-6 w-full">
-            <LeaderboardView rpcUrl={rpcUrl} />
+            <LeaderboardView rpcUrl={rpcUrl} tokenMetadata={tokenMetadata} />
           </main>
         )}
 
@@ -1237,28 +1015,96 @@ function Dashboard() {
               title="Settings & RPC"
             >
               <Settings className="w-4 h-4" />
-              {STANDARD_PUBLIC_RPCS.includes(rpcUrl) && (
-                <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-amber-500 rounded-full" />
-              )}
             </button>
             {showRpcSettings && (
-              <div className="absolute right-0 top-11 w-68 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl z-50 text-xs space-y-4">
-                <div className="space-y-1.5">
+              <div className="absolute right-0 top-11 w-72 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl z-50 text-xs space-y-4">
+                <div className="space-y-2">
                   <h4 className="font-bold text-white uppercase tracking-wider">Node RPC Config</h4>
-                  <input
-                    type="text"
-                    value={rpcUrl}
-                    onChange={(e) => setRpcUrl(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 font-mono text-[10px] text-white focus:outline-none focus:border-emerald-500"
-                  />
-                  <p className="text-[9px] text-slate-500 leading-normal">
-                    Paste a private RPC URL (e.g. from Helius free tier). Never share this URL publicly.
-                  </p>
-                  {STANDARD_PUBLIC_RPCS.includes(rpcUrl) && (
-                    <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[9px] text-amber-400 leading-normal animate-in fade-in duration-200">
-                      <strong>Notice:</strong> Using public Solana RPC node. Live Jupiter quoting & confirmations may be throttled. Custom node is recommended for optimal speed.
+                  <div className="space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setRpcUrl(DEFAULT_RPC_URL)}
+                      className={`w-full text-left p-2 rounded-lg border text-[11px] font-bold flex items-center justify-between cursor-pointer transition-all ${
+                        rpcUrl === DEFAULT_RPC_URL
+                          ? 'bg-emerald-500/10 border-emerald-500/50 text-white'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <div>
+                        <div>Round Trip RPC</div>
+                        <div className="text-[9px] text-emerald-400 font-normal">default, recommended</div>
+                      </div>
+                      {rpcUrl === DEFAULT_RPC_URL && (
+                        <span className="text-[10px] font-bold text-emerald-400">Active</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (rpcUrl === DEFAULT_RPC_URL) {
+                          setRpcUrl('');
+                        }
+                      }}
+                      className={`w-full text-left p-2 rounded-lg border text-[11px] font-bold flex items-center justify-between cursor-pointer transition-all ${
+                        rpcUrl !== DEFAULT_RPC_URL
+                          ? 'bg-emerald-500/10 border-emerald-500/50 text-white'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span>Custom RPC URL</span>
+                      {rpcUrl !== DEFAULT_RPC_URL && (
+                        <span className="text-[10px] font-bold text-emerald-400">Active</span>
+                      )}
+                    </button>
+                  </div>
+                  {rpcUrl !== DEFAULT_RPC_URL && (
+                    <div className="space-y-1 pt-1">
+                      <input
+                        type="text"
+                        value={rpcUrl}
+                        placeholder="https://..."
+                        onChange={(e) => setRpcUrl(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 font-mono text-[10px] text-white focus:outline-none focus:border-emerald-500"
+                      />
+                      <p className="text-[9px] text-slate-500 leading-normal">
+                        Paste a private RPC URL. Never share this URL publicly.
+                      </p>
                     </div>
                   )}
+                </div>
+
+                <hr className="border-slate-850" />
+
+                {/* Token Viewer setting */}
+                <div className="space-y-1.5">
+                  <h4 className="font-bold text-white uppercase tracking-wider">Token Viewer</h4>
+                  <div className="grid grid-cols-2 gap-1 bg-slate-950 p-1 border border-slate-800 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => setTokenViewer('dexscreener')}
+                      className={`py-1 text-[10px] font-extrabold rounded border cursor-pointer transition-all ${
+                        tokenViewer === 'dexscreener'
+                          ? 'bg-emerald-500 border-emerald-500 text-slate-950 shadow-sm'
+                          : 'bg-transparent border-transparent text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      DexScreener
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTokenViewer('jupiter')}
+                      className={`py-1 text-[10px] font-extrabold rounded border cursor-pointer transition-all ${
+                        tokenViewer === 'jupiter'
+                          ? 'bg-emerald-500 border-emerald-500 text-slate-950 shadow-sm'
+                          : 'bg-transparent border-transparent text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Jupiter
+                    </button>
+                  </div>
+                  <p className="text-[9px] text-slate-500 leading-normal">
+                    Clicking a coin opens it here in a new tab.
+                  </p>
                 </div>
 
                 <hr className="border-slate-850" />
@@ -1340,38 +1186,46 @@ function Dashboard() {
       {/* Primary Layout Frame */}
       <main className="max-w-7xl mx-auto px-6 py-8 flex-grow w-full space-y-6">
         
-        {!rpcWarningDismissed && STANDARD_PUBLIC_RPCS.includes(rpcUrl) && (
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 flex items-start gap-3 relative text-amber-400 animate-in fade-in duration-200">
-            <span className="text-base">⚠️</span>
-            <div className="flex-grow space-y-1 text-xs">
-              <h4 className="font-extrabold text-white">Using Public Solana RPC</h4>
-              <p className="text-slate-300 leading-relaxed">
-                You're on a public Solana RPC, which is rate-limited and may cause failed balance loads or swaps. Add a private RPC (Helius, Triton, QuickNode) in Settings for reliable trading.
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                setRpcWarningDismissed(true);
-                localStorage.setItem('roundtrip_rpc_warning_dismissed', 'true');
-              }}
-              className="text-slate-500 hover:text-slate-300 transition-colors p-1 rounded-lg cursor-pointer flex-shrink-0"
-              title="Dismiss warning"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-
-        {showDisclaimerBanner && (
-          <Disclaimer showDismissButton onDismiss={() => setShowDisclaimerBanner(false)} />
-        )}
-
         {/* Global Statistics Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
           <div className="bg-slate-900 border border-slate-850 p-4 rounded-xl space-y-1">
             <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Total Wallet Inventory</span>
             <div className="text-xl font-mono font-black text-white">
               ${totalWalletValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+
+          <div className="bg-slate-900 border border-slate-850 p-4 rounded-xl space-y-1">
+            <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Total Rebalance Harvest</span>
+            <div>
+              {(() => {
+                const isZero = Math.abs(netHarvestUsd) < 0.005;
+                const isPositive = netHarvestUsd >= 0.005;
+                const colorClass = isZero ? 'text-slate-400' : isPositive ? 'text-emerald-400' : 'text-rose-400';
+                const formattedValue = isZero
+                  ? '$0.00'
+                  : `${isPositive ? '+' : '-'}$${Math.abs(netHarvestUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+                const firstHarvestDate = firstHarvestTs
+                  ? new Date(firstHarvestTs).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                  : null;
+
+                return (
+                  <>
+                    <div className={`text-xl font-mono font-black ${colorClass}`}>
+                      {formattedValue}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400 font-medium">
+                      {harvestLedger.length} rebalance {harvestLedger.length === 1 ? 'swap' : 'swaps'}
+                    </div>
+                    {firstHarvestDate && (
+                      <div className="text-[10px] font-mono text-slate-500 mt-0.5">
+                        since {firstHarvestDate}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </div>
 
@@ -1424,17 +1278,6 @@ function Dashboard() {
             <button
               onClick={() => {
                 setSelectedGroupId(null);
-                setActiveTab('history');
-              }}
-              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'history' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Historical ledger logs
-            </button>
-            <button
-              onClick={() => {
-                setSelectedGroupId(null);
                 setActiveTab('leaderboard');
               }}
               className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
@@ -1466,11 +1309,15 @@ function Dashboard() {
               setSelectedGroupId(null);
             }}
             onRefreshPrices={refreshPrices}
-            onSaveSnapshot={handleSaveSnapshot}
-            groupSnapshots={snapshots.filter((s) => s && s.groupId === activeGroup.id)}
+            harvestLedger={harvestLedger}
+            onRecordHarvest={recordHarvestEvents}
             loadingPrices={loadingPrices}
             onMoveToken={handleMoveToken}
             onOpenAddBasket={() => setShowConvertModal(true)}
+            isVerifiedCoin={isVerifiedCoin}
+            onAddTokenMetadata={(token) => {
+              setTokenMetadata((prev) => ({ ...prev, [token.address]: token }));
+            }}
           />
         ) : (
           /* SCREEN 1: WALLET HOME VIEW */
@@ -1531,10 +1378,12 @@ function Dashboard() {
                     }`}
                   >
                     <div className="flex items-center gap-3 min-w-0 flex-grow">
-                      <TokenLogo logoURI={tokenMetadata[item.mint]?.logoURI} symbol={item.symbol} size="sm" />
+                      <TokenLink mint={item.mint} showIcon>
+                        <TokenLogo logoURI={tokenMetadata[item.mint]?.logoURI} symbol={item.symbol} size="sm" />
+                        <strong className="text-white font-extrabold text-xs">{item.symbol}</strong>
+                      </TokenLink>
                       
                       <div className="flex items-center gap-2 flex-wrap min-w-0">
-                        <strong className="text-white font-extrabold text-xs">{item.symbol}</strong>
                         
                         <span className="text-[10px] text-cyan-400/90 font-mono font-medium">
                           {item.amountHuman.toLocaleString(undefined, { maximumFractionDigits: 4 })}
@@ -2060,19 +1909,8 @@ function Dashboard() {
               />
             )}
 
-            {activeTab === 'history' && (
-              <HistoryView
-                groups={groups}
-                snapshots={snapshots}
-                allBalances={balances}
-                tokenMetadata={tokenMetadata}
-                prices={prices}
-                onClearHistory={() => setSnapshots([])}
-              />
-            )}
-
             {activeTab === 'leaderboard' && (
-              <LeaderboardView rpcUrl={rpcUrl} />
+              <LeaderboardView rpcUrl={rpcUrl} tokenMetadata={tokenMetadata} />
             )}
           </>
         )}
@@ -2108,38 +1946,10 @@ function Dashboard() {
           tokenMetadata={tokenMetadata}
           prices={prices}
           onClose={() => setShowConvertModal(false)}
-          onSuccess={async (groupId, freshBalances) => {
+          onSuccess={async (_groupId, _freshBalances) => {
             setShowConvertModal(false);
             await refreshBalances();
             await refreshPrices();
-
-            // Log snapshot for the funded group using freshBalances
-            const grp = groups.find((g) => g.id === groupId);
-            if (grp) {
-              const grpBalances = grp.memberMints.map((mint) => {
-                const meta = tokenMetadata[mint] || { symbol: mint.substring(0, 4), decimals: 9 };
-                const priceInfo = prices[mint] || { price: 0, change24h: 0 };
-                const rawBalance = freshBalances[mint] !== undefined ? freshBalances[mint] : (balances[mint] || 0);
-                const amountHuman = rawBalance / Math.pow(10, meta.decimals || 9);
-                const usdValue = amountHuman * priceInfo.price;
-                
-                return {
-                  mint,
-                  symbol: meta.symbol,
-                  decimals: meta.decimals || 9,
-                  amount: rawBalance,
-                  amountHuman,
-                  price: priceInfo.price,
-                  usdValue,
-                  currentWeight: 0,
-                  targetWeight: 0,
-                  drift: 0,
-                  change24h: priceInfo.change24h,
-                };
-              });
-              const grpTotalUsd = grpBalances.reduce((sum, b) => sum + b.usdValue, 0);
-              handleSaveSnapshot(grp.id, grp.name, grpBalances, grpTotalUsd, 'convert');
-            }
 
             setConvertSuccessMessage("Split swaps executed successfully! Your basket assets have been funded and tracked.");
             setTimeout(() => setConvertSuccessMessage(null), 4500);
@@ -2247,8 +2057,11 @@ function Dashboard() {
         onCancel={() => setGroupToDelete(null)}
       />
 
+      {/* Risk Disclosure: quiet, small, muted text placed above footer */}
+      <Disclaimer />
+
       {/* Page Footer */}
-      <footer className="h-10 bg-slate-950 border-t border-slate-850 flex items-center justify-between px-6 shrink-0 w-full mt-10">
+      <footer className="h-10 bg-slate-950 border-t border-slate-850 flex items-center justify-between px-6 shrink-0 w-full mt-6">
         <div className="flex gap-6 items-center">
           <div className="flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
